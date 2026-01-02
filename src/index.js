@@ -7,16 +7,14 @@
  *  ✅ Buy with wallet shortcut: "mua lg35k hn" => wallet=hana auto, no ask
  *  ✅ LOT code: MA01, MA02...
  *  ✅ Resolve LOT: "ma 01 loi 1 qr tach 1" (VN có/không dấu)
- *  ✅ Sell: "ban ss 50k ma 01" => sell 1 phone from lot MA01 @50k total, ask wallet if missing
- *  ✅ List lots: includes new/ok/tach/sold counts + revenue by lot
+ *  ✅ Sell:
+ *      - "ban ss 50k ma 01" => bán 1 máy trong lô MA01, tiền + vào ví user chọn
+ *      - "ban 2 ss 80k ma01" => bán 2 máy (tức bán hết lô 2 máy), 80k là TỔNG tiền thu về
  *
  *  REQUIRED ENV:
  *   - BOT_TOKEN
  *   - GOOGLE_SHEET_ID
  *   - GOOGLE_APPLICATION_CREDENTIALS (path to SA json)
- *
- *  OPTIONAL ENV:
- *   - ADMIN_TELEGRAM_ID
  */
 
 import express from "express";
@@ -33,7 +31,6 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_APPLICATION_CREDENTIALS =
   process.env.GOOGLE_APPLICATION_CREDENTIALS || "/etc/secrets/google-service-account.json";
-const ADMIN_TELEGRAM_ID = process.env.ADMIN_TELEGRAM_ID ? String(process.env.ADMIN_TELEGRAM_ID).trim() : "";
 
 if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
 if (!GOOGLE_SHEET_ID) throw new Error("Missing GOOGLE_SHEET_ID");
@@ -190,7 +187,7 @@ function normalizeForParse(text) {
     return `__EMAIL_${emails.length - 1}__`;
   });
   tmp = removeDiacritics(tmp).toLowerCase();
-  // tách chữ-số dính liền kiểu "lg35k" -> "lg 35k"
+  // tách chữ-số dính liền: "lg35k" -> "lg 35k"
   tmp = tmp.replace(/([a-z]+)(\d)/g, "$1 $2");
   tmp = tmp.replace(/(\d)([a-z]+)/g, "$1 $2");
   tmp = tmp.replace(/[，]/g, ",").replace(/\s+/g, " ").trim();
@@ -270,7 +267,6 @@ async function toggleSmartParse() {
  * SECTION 9 — Payout config (default)
  * ========================= */
 async function getPayouts() {
-  // defaults
   const hq = parseMoney((await getSetting("PAYOUT_HQ")) || "100k") ?? 100000;
   const qr = parseMoney((await getSetting("PAYOUT_QR")) || "57k") ?? 57000;
   const db = parseMoney((await getSetting("PAYOUT_DB")) || "100k") ?? 100000;
@@ -283,7 +279,6 @@ async function getPayouts() {
 function parseWalletShortcut(text) {
   const norm = normalizeForParse(text);
   const t = ` ${norm} `;
-  // shortcuts: hn/hana, uri, kt, tm/tien mat
   if (t.includes(" hn ") || t.includes(" hana ")) return "hana";
   if (t.includes(" uri ")) return "uri";
   if (t.includes(" kt ")) return "kt";
@@ -300,16 +295,25 @@ async function listWallets() {
     if (!code) continue;
     wallets.push({ code, name: name || code.toUpperCase() });
   }
+
+  // fallback nếu chưa tạo sheet WALLETS
   if (wallets.length === 0) {
     return [
       { code: "uri", name: "URI" },
       { code: "hana", name: "HANA" },
-      { code: "kt", name: "KT" },
+      { code: "kt", name: "Viễn Thông KT" },
       { code: "tm", name: "TIỀN MẶT" },
     ];
   }
+
   // ensure tm exists
   if (!wallets.find((w) => w.code === "tm")) wallets.push({ code: "tm", name: "TIỀN MẶT" });
+
+  // ensure kt name
+  const kt = wallets.find((w) => w.code === "kt");
+  if (kt && (!kt.name || kt.name.toUpperCase() === "KT")) kt.name = "Viễn Thông KT";
+  if (!kt) wallets.push({ code: "kt", name: "Viễn Thông KT" });
+
   return wallets;
 }
 
@@ -410,7 +414,6 @@ async function addLot({ qty, model, total_price, wallet, note }) {
 
   await appendValues("LOTS!A1", [[lot, nowIso(), qty, model, total_price, unit, wallet, note || ""]]);
 
-  // trừ ví theo tổng lô
   await addWalletLog({
     wallet,
     type: "lot_buy",
@@ -421,7 +424,6 @@ async function addLot({ qty, model, total_price, wallet, note }) {
     chatId: "",
   });
 
-  // tạo phone records
   const ids = [];
   for (let i = 1; i <= qty; i++) {
     const phone_id = `${lot}-${i}`;
@@ -490,10 +492,10 @@ function detectModelToken(norm) {
     { keys: [" vivo "], model: "Vivo" },
     { keys: [" xiaomi ", " mi "], model: "Xiaomi" },
     { keys: [" redmi "], model: "Redmi" },
+    { keys: [" nokia "], model: "Nokia" },
+    { keys: [" pixel "], model: "Pixel" },
   ];
   for (const item of map) if (item.keys.some((k) => t.includes(k))) return item.model;
-
-  // dính kiểu "2ss", "lg35k" đã được normalize tách chữ-số
   if (norm.match(/\b\d+ss\b/) || t.includes(" ss ")) return "Samsung";
   if (norm.match(/\b\d+ip\b/) || t.includes(" ip ")) return "iPhone";
   if (t.includes(" lg ")) return "LG";
@@ -535,13 +537,8 @@ function parseBuySentence(text) {
 }
 
 /* =========================
- * SECTION 14 — Parse "bán ..." (SELL LOT phone)
- * =========================
- * Examples:
- *  - ban ss 50k ma 01
- *  - ban 2 ss 50k ma01 hn
- *  - ban lg35k ma 07 tm
- */
+ * SECTION 14 — Parse "bán ..." (SELL)
+ * ========================= */
 function parseLotCode(text) {
   const norm = normalizeForParse(text);
   let m = norm.match(/\b(ma|ma so|ma)\s*0*(\d{1,3})\b/);
@@ -562,7 +559,6 @@ function parseSellSentence(text) {
   const totalPrice = extractMoneyFromText(text);
   if (totalPrice == null) return { incomplete: true, reason: "missing_price" };
 
-  // qty optional: "ban 2 ..."
   let qty = 1;
   const mQty = norm.match(/\bban\s+(\d+)\b/);
   if (mQty) qty = Number(mQty[1]) || 1;
@@ -722,10 +718,12 @@ async function sellFromLot({ chatId, lot, qty, totalPrice, wallet }) {
   }
 
   // pick sellable: prefer new then ok; never sell sold
-  const sellable = lotPhones.filter((p) => p.status !== "sold").sort((a, b) => {
-    const rank = (s) => (s === "new" ? 0 : s === "ok" ? 1 : s === "tach" ? 2 : 3);
-    return rank(a.status) - rank(b.status);
-  });
+  const sellable = lotPhones
+    .filter((p) => p.status !== "sold")
+    .sort((a, b) => {
+      const rank = (s) => (s === "new" ? 0 : s === "ok" ? 1 : s === "tach" ? 2 : 3);
+      return rank(a.status) - rank(b.status);
+    });
 
   const ids = sellable.slice(0, qty).map((p) => p.phone_id);
   if (ids.length === 0) {
@@ -733,10 +731,9 @@ async function sellFromLot({ chatId, lot, qty, totalPrice, wallet }) {
     return true;
   }
 
-  // mark sold
   for (const id of ids) await updatePhoneRowById(id, { status: "sold", game: "none" });
 
-  // add money to wallet (total)
+  // totalPrice là TỔNG tiền thu về (đúng yêu cầu)
   await addWalletLog({
     wallet,
     type: "machine_sell",
@@ -749,7 +746,7 @@ async function sellFromLot({ chatId, lot, qty, totalPrice, wallet }) {
 
   await send(
     chatId,
-    `💸 BÁN XONG RỒI NÈ 🥳\nLô: ${lot}\nBán: ${ids.length} máy\nTiền về ví ${wallet.toUpperCase()}: ${moneyWON(Math.round(totalPrice))}\n\n(Đỉnh quá trời 😝)`,
+    `💸 BÁN XONG RỒI NÈ 🥳\nLô: ${lot}\nBán: ${ids.length} máy\nTiền về ví ${wallet.toUpperCase()}: ${moneyWON(Math.round(totalPrice))}\n\n(Chốt đơn mượt ghê 😝)`,
     { reply_markup: leftKb() }
   );
   return true;
@@ -778,7 +775,10 @@ async function reportLastMonth(chatId) {
 async function reportWallets(chatId) {
   const balances = await walletBalances();
   let total = 0;
-  const lines = balances.map((b) => (total += b.balance, `• ${b.name} (${b.code}): ${moneyWON(b.balance)}`));
+  const lines = balances.map((b) => {
+    total += b.balance;
+    return `• ${b.name} (${b.code}): ${moneyWON(b.balance)}`;
+  });
   await send(chatId, `💼 SỐ DƯ CÁC VÍ\n\n${lines.join("\n")}\n\nTổng: ${moneyWON(total)}`, { reply_markup: rightKb() });
 }
 async function reportStatsGames(chatId) {
@@ -873,7 +873,7 @@ async function listLotsPretty(chatId) {
 
   await send(
     chatId,
-    `🧪 DANH SÁCH LÔ MÁY (20 lô gần nhất)\n\n${lines.join("\n\n")}\n\nChốt lô kiểu: "ma 01 loi 1 qr tach 1"\nBán kiểu: "ban 1 ss 50k ma 01 tm"`,
+    `🧪 DANH SÁCH LÔ MÁY (20 lô gần nhất)\n\n${lines.join("\n\n")}\n\nChốt lô: "ma 01 loi 1 qr tach 1"\nBán: "ban 2 ss 80k ma01 tm"`,
     { reply_markup: leftKb() }
   );
 }
@@ -931,10 +931,10 @@ function helpText() {
     `- mua lg35k hn         (1 LG, tổng 35k, ví HANA)\n` +
     `- mua 2 dt ss 45k uri  (2 Samsung, tổng 45k, ví URI)\n\n` +
     `👉 Nếu bạn không ghi ví trong câu, bot sẽ hỏi “tính tiền ví nào?”\n` +
-    `Ví tắt: hn/hana | uri | kt | tm(tiền mặt)\n\n` +
+    `Ví tắt: hn/hana | uri | kt (Viễn Thông KT) | tm (tiền mặt)\n\n` +
     `✅ Bán máy (tiền + về ví):\n` +
     `- ban ss 50k ma 01      (bán 1 máy của MA01, hỏi ví)\n` +
-    `- ban 2 ss 50k ma01 tm  (bán 2 máy, tiền vào TM)\n\n` +
+    `- ban 2 ss 80k ma01 tm  (bán 2 máy, 80k là TỔNG tiền)\n\n` +
     `✅ Chốt kết quả theo mã lô:\n` +
     `- ma 01 loi 2 hq\n` +
     `- ma01 tach 2\n` +
@@ -982,7 +982,11 @@ async function handleSessionInput(chatId, userName, text) {
     if (parsed.wallet) {
       sess.step = "note";
       setSession(chatId, sess);
-      await send(chatId, `Okie 😚 Mua lô ${parsed.qty} máy ${parsed.model}, tổng ${moneyWON(parsed.totalPrice)}.\nVí: ${parsed.wallet.toUpperCase()}\nNhập ghi chú thêm (hoặc '-' để bỏ qua) nha~`, { reply_markup: leftKb() });
+      await send(
+        chatId,
+        `Okie 😚 Mua lô ${parsed.qty} máy ${parsed.model}, tổng ${moneyWON(parsed.totalPrice)}.\nVí: ${parsed.wallet.toUpperCase()}\nNhập ghi chú thêm (hoặc '-' để bỏ qua) nha~`,
+        { reply_markup: leftKb() }
+      );
       return true;
     }
 
@@ -1025,7 +1029,7 @@ async function handleSessionInput(chatId, userName, text) {
 
     await send(
       chatId,
-      `✅ Xong rồi nè 🥳\nTạo lô: ${r.lot}\nMua ${sess.data.qty} máy ${sess.data.model}\nTổng: ${moneyWON(Math.round(sess.data.totalPrice))}\nVí: ${String(sess.data.wallet || "").toUpperCase()}\n\nChốt lô: "ma ${r.lot.slice(2)} loi 1 qr tach 1"\nBán máy: "ban ss 50k ma ${r.lot.slice(2)} tm"`,
+      `✅ Xong rồi nè 🥳\nTạo lô: ${r.lot}\nMua ${sess.data.qty} máy ${sess.data.model}\nTổng: ${moneyWON(Math.round(sess.data.totalPrice))}\nVí: ${String(sess.data.wallet || "").toUpperCase()}\n\nChốt lô: "ma ${r.lot.slice(2)} loi 1 qr tach 1"\nBán: "ban 2 ss 80k ma${r.lot.slice(2)} tm"`,
       { reply_markup: leftKb() }
     );
     return true;
@@ -1035,7 +1039,7 @@ async function handleSessionInput(chatId, userName, text) {
   if (sess.flow === "sell" && sess.step === "sentence") {
     const parsed = parseSellSentence(text);
     if (!parsed || parsed.incomplete) {
-      await send(chatId, "Bạn gõ kiểu: `ban ss 50k ma 01` hoặc `ban 2 ss 50k ma01 tm` nha~", { reply_markup: leftKb() });
+      await send(chatId, "Bạn gõ kiểu: `ban ss 50k ma 01` hoặc `ban 2 ss 80k ma01 tm` nha~", { reply_markup: leftKb() });
       return true;
     }
     sess.data = parsed;
@@ -1140,7 +1144,7 @@ async function handleTextMessage(msg) {
   }
   if (text === "💸 Bán Máy") {
     setSession(chatId, { flow: "sell", step: "sentence", data: {} });
-    await send(chatId, "💸 Bán Máy\nBạn gõ: `ban ss 50k ma 01` hoặc `ban 2 ss 50k ma01 tm` nha~", { reply_markup: leftKb() });
+    await send(chatId, "💸 Bán Máy\nBạn gõ: `ban ss 50k ma 01` hoặc `ban 2 ss 80k ma01 tm` nha~", { reply_markup: leftKb() });
     return;
   }
   if (text === "🧪 Kiểm Tra Máy") return listLotsPretty(chatId);
@@ -1148,14 +1152,14 @@ async function handleTextMessage(msg) {
   // session
   if (await handleSessionInput(chatId, userName, text)) return;
 
-  // 1) resolve lot profit/tach/hue
+  // resolve lot profit/tach/hue
   const lotCmd = parseLotResolve(text);
   if (lotCmd && lotCmd.segments && lotCmd.segments.length > 0) {
     await applyLotResolve({ chatId, userName, lot: lotCmd.lot, segments: lotCmd.segments });
     return;
   }
 
-  // 2) sell direct without menu
+  // sell direct without menu
   const sell = parseSellSentence(text);
   if (sell && !sell.incomplete) {
     if (sell.wallet) {
@@ -1169,7 +1173,7 @@ async function handleTextMessage(msg) {
     return;
   }
 
-  // 3) quick revenue input
+  // quick revenue input
   const norm = normalizeForParse(text);
   const game = detectGameFromText(norm);
   const amt = extractMoneyFromText(text);
@@ -1182,11 +1186,10 @@ async function handleTextMessage(msg) {
     return;
   }
 
-  // 4) Smart Parse buy lot even without menu
+  // Smart Parse buy lot even without menu
   if (await isSmartParseEnabled()) {
     const buy = parseBuySentence(text);
     if (buy && !buy.incomplete) {
-      // wallet in sentence => go note
       if (buy.wallet) {
         setSession(chatId, { flow: "buy_lot", step: "note", data: buy });
         await send(chatId, `Okie 😚 Mua lô ${buy.qty} máy ${buy.model}, tổng ${moneyWON(buy.totalPrice)}.\nVí: ${buy.wallet.toUpperCase()}\nNhập note (hoặc '-') nha~`, {
