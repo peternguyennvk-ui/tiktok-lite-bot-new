@@ -1,64 +1,27 @@
 // src/index.js
 /**
  * =================================================================================================
- *  TIKTOK_LITE_BOT – FINAL ONE-FILE BUILD (CUTE EDITION) ✅✅✅  (1000+ lines)
+ *  TIKTOK_LITE_BOT – FINAL CUTE EDITION ✅ (Webhook + Sheets + Smart Parse + Machine/Wallet + Gemini)
  * =================================================================================================
- *  ✅ Webhook Telegram (Express) + Google Sheets DB (googleapis) + Cron remind 14-day
- *  ✅ Menus: Main (⬅️ Menu / ➡️ Menu), Left (Input), Right (Reports/Help/AI/Reset + Machine+Wallet)
+ *  ✅ Render stable: binds 0.0.0.0 + /ping endpoint
+ *  ✅ Menus: Main (⬅️/➡️), Left (input), Right (reports/help/ai/reset + machine/wallet)
  *  ✅ Currency display: WON (₩) everywhere
- *  ✅ Keep Gemini API (optional) as last-resort fallback ONLY
- *  ✅ Add Smart Parse (FREE) before Gemini: hiểu nhiều kiểu gõ "lỏng" mà không cần key
- *  ✅ Add Machine + Wallet full feature set:
- *      - Buy machine (muamay)
- *      - Mark machine result (mayloi/mayhue/maytach)
- *      - Wallet ledger (WALLET_LOG) + report wallet balances
- *      - Wallet adjust to target balance (sodu)
- *      - Machine profit/loss report includes counts + money + per wallet
- *  ✅ Edit commands:
- *      - /edit last            (revenue) -> adjustment entries (safe)
- *      - /edit machine last    (machine) -> adjustment entries (safe)
- *  ✅ Reset data (pass=12345) – BUT: bot KHÔNG LỘ pass khi hỏi xóa
- *  ✅ Cute replies: ngộ nghĩnh đáng yêu, tinh thần sảng khoái 😚
- *  ✅ Render timeout fix: app.listen binds "0.0.0.0" + /ping endpoint for healthcheck
+ *  ✅ Reset: hỏi pass nhưng KHÔNG lộ pass trong chat
+ *  ✅ Cute replies: ngộ nghĩnh đáng yêu hài hước 😝
+ *  ✅ Smart Parse FREE (no key) + Gemini fallback optional
  *
- *  NOTE ABOUT TELEGRAM LIMITATION:
- *   - Telegram bot cannot auto-fill the user's input box on button click (Telegram limitation).
- *   - We use multi-step prompts (ask name/email/amount) + templates to copy/paste if needed.
- *
- * -------------------------------------------------------------------------------------------------
  *  REQUIRED ENV:
  *   - BOT_TOKEN
  *   - GOOGLE_SHEET_ID
- *   - GOOGLE_APPLICATION_CREDENTIALS (path to service account json)
+ *   - GOOGLE_APPLICATION_CREDENTIALS (path to SA json)
  *
  *  OPTIONAL ENV:
- *   - ADMIN_TELEGRAM_ID  (admin for 14-day check-in reminders)
+ *   - ADMIN_TELEGRAM_ID
  *
- * -------------------------------------------------------------------------------------------------
- *  SHEETS (tabs) expected (your existing design):
- *   - SETTINGS          (A:key, B:value) – used for GEMINI_API_KEY, GEMINI_ENABLED, GEMINI_MODEL, SMART_PARSE_ENABLED
- *   - GAME_REVENUE      (A:ts, B:game, C:type, D:amount, E:note, F:chat_id, G:user_name)
- *   - INVITES           (A:ts_created, B:game, C:name, D:email, E:invited_at, F:due_date,
- *                        G:status, H:asked, I:asked_at, J:checkin_reward, K:done_at, L:note)
- *   - CHECKIN_REWARD    (A:ts, B:game, C:name, D:email, E:due_date, F:amount, G:chat_id, H:user_name)
- *
- *   - WALLETS           (A:wallet_code, B:wallet_name)    (balance is derived from ledger)
- *   - WALLET_LOG        (A:ts, B:wallet_code, C:type, D:amount, E:ref_type, F:ref_id, G:note, H:chat_id)
- *
- *   - PHONES            (A:phone_id, B:ts_buy, C:buy_price, D:wallet_code, E:status, F:note)
- *   - PHONE_PROFIT_LOG  (A:ts, B:phone_id, C:result, D:amount, E:note, F:wallet_code, G:chat_id)
- *
- *   - UNDO_LOG          (optional; audit)
- *
- * -------------------------------------------------------------------------------------------------
- *  IMPORTANT:
- *   - No Google Apps Script APIs (NO PropertiesService). Node.js only.
- * -------------------------------------------------------------------------------------------------
+ *  NOTE: Telegram limitation: cannot auto pre-fill input box via keyboard button.
+ *        We do guided flows (bot hỏi từng bước) + lệnh nhập tay vẫn giữ nguyên.
  */
 
-/* =========================
- * SECTION 0 — Imports
- * ========================= */
 import express from "express";
 import fetch from "node-fetch";
 import { google } from "googleapis";
@@ -68,7 +31,7 @@ import cron from "node-cron";
 /* =========================
  * SECTION 1 — Env & constants
  * ========================= */
-const VERSION = "FINAL-CUTE-SMARTPARSE-MACHINE-WALLET-GEMINI-WON-ONEFILE";
+const VERSION = "FINAL-CUTE-SMARTPARSE-MACHINE-WALLET-GEMINI-WON";
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_APPLICATION_CREDENTIALS =
@@ -81,15 +44,15 @@ if (!GOOGLE_SHEET_ID) throw new Error("Missing GOOGLE_SHEET_ID");
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 const RESET_PASS = "12345";
 
-/**
- * Display money as Korean Won
- */
+/* =========================
+ * SECTION 2 — Money display WON
+ * ========================= */
 function moneyWON(n) {
   return "₩" + Number(n || 0).toLocaleString("ko-KR");
 }
 
 /* =========================
- * SECTION 2 — Express server
+ * SECTION 3 — Express server
  * ========================= */
 const app = express();
 app.use(express.json());
@@ -98,7 +61,7 @@ app.get("/", (_, res) => res.status(200).send(`OK ${VERSION}`));
 app.get("/ping", (_, res) => res.status(200).json({ ok: true, version: VERSION }));
 
 /* =========================
- * SECTION 3 — Telegram helpers + Cute layer
+ * SECTION 4 — Telegram helpers + Cute layer
  * ========================= */
 async function tg(method, payload) {
   const resp = await fetch(`${TELEGRAM_API}/${method}`, {
@@ -110,47 +73,23 @@ async function tg(method, payload) {
   return j;
 }
 
-/**
- * Cuteify: make replies playful, but not too spammy.
- * - We keep money & commands intact.
- * - We add soft emojis and friendly words.
- */
 function cuteify(text) {
   const s0 = String(text ?? "");
-
-  // If the message is "helpText" big, keep it mostly clean but still friendly
   const isLong = s0.length > 600;
 
-  // Common phrase replacements (gentle)
   let s = s0
     .replaceAll("✅ Đã", "✅ Xong rồi nè")
     .replaceAll("✅ Bot sẵn sàng", "✅ Bot lên đồ xong rồi nè")
     .replaceAll("❌ Sai", "❌ Ôi hông đúng rồi bạn iu")
     .replaceAll("❌ Không tìm thấy", "🥺 Mình tìm hoài mà hổng thấy á")
     .replaceAll("⚠️", "⚠️ Ui ui")
+    .replaceAll("Không hiểu", "Nhập sai rồi bạn iu ơi ^^")
     .replaceAll("Nhập lại", "Bạn nhập lại giúp mình nha~")
-    .replaceAll("Nhập ", "Bạn nhập ")
-    .replaceAll("Không hiểu", "Nhập sai rồi bạn iu ơi ^^");
+    .replaceAll("Nhập ", "Bạn nhập ");
 
-  // A few cute tails (deterministic by text length)
-  const tailsShort = [
-    " 😚",
-    " 🫶",
-    " ✨",
-    " (iu iu)",
-    " ^^",
-    " 🥳",
-    " 😝",
-    " 🤭",
-    " 💖",
-  ];
-  const tailsLong = [
-    "\n\n(Thiếu gì cứ gọi mình nha 😚)",
-    "\n\n(Mình ở đây nè 🫶)",
-    "\n\n(Okelaaa ✨)",
-  ];
+  const tailsShort = [" 😚", " 🫶", " ✨", " (iu iu)", " ^^", " 🥳", " 😝", " 🤭", " 💖"];
+  const tailsLong = ["\n\n(Thiếu gì cứ gọi mình nha 😚)", "\n\n(Mình ở đây nè 🫶)", "\n\n(Okelaaa ✨)"];
 
-  // avoid adding tails when message already ends with an emoji or caret
   const endsWithEmojiLike = /[\u{1F300}-\u{1FAFF}\u2600-\u27BF]$/u.test(s.trim());
   const endsWithCaret = /\^+$/.test(s.trim());
 
@@ -158,28 +97,22 @@ function cuteify(text) {
     const idx = (s.length + (isLong ? 7 : 3)) % (isLong ? tailsLong.length : tailsShort.length);
     s = s + (isLong ? tailsLong[idx] : tailsShort[idx]);
   }
-
   return s;
 }
 
-/**
- * send() now auto-cuteifies by default.
- * If you ever need raw message (rare), pass { __raw: true } inside extra.
- */
 async function send(chatId, text, extra = {}) {
   if (!chatId) return;
   const raw = extra?.__raw === true;
-  if (raw) {
-    const { __raw, ...rest } = extra;
-    await tg("sendMessage", { chat_id: chatId, text: String(text ?? ""), ...rest });
-    return;
-  }
   const { __raw, ...rest } = extra;
-  await tg("sendMessage", { chat_id: chatId, text: cuteify(text), ...rest });
+  await tg("sendMessage", {
+    chat_id: chatId,
+    text: raw ? String(text ?? "") : cuteify(text),
+    ...rest,
+  });
 }
 
 /* =========================
- * SECTION 4 — Reply keyboards (PRETTY ICONS)
+ * SECTION 5 — Reply keyboards
  * ========================= */
 function kb(rows) {
   return {
@@ -190,16 +123,10 @@ function kb(rows) {
   };
 }
 
-/**
- * Main menu = 2 buttons only
- */
 function mainKb() {
   return kb([[{ text: "⬅️ Menu" }, { text: "➡️ Menu" }]]);
 }
 
-/**
- * Left menu = input workflows
- */
 function leftKb() {
   return kb([
     [{ text: "🎁 Mời Hộp Quà" }, { text: "🔳 Mời QR" }],
@@ -210,9 +137,6 @@ function leftKb() {
   ]);
 }
 
-/**
- * Right menu = reports + guidance + AI + reset + wallet/machine reports
- */
 function rightKb() {
   return kb([
     [{ text: "💰 1) Tổng Doanh Thu" }],
@@ -229,7 +153,7 @@ function rightKb() {
 }
 
 /* =========================
- * SECTION 5 — Google Sheets setup
+ * SECTION 6 — Google Sheets setup
  * ========================= */
 const auth = new google.auth.GoogleAuth({
   keyFile: GOOGLE_APPLICATION_CREDENTIALS,
@@ -271,7 +195,7 @@ async function clearValues(rangeA1) {
 }
 
 /* =========================
- * SECTION 6 — Common utils
+ * SECTION 7 — Common utils
  * ========================= */
 function nowIso() {
   return new Date().toISOString();
@@ -358,7 +282,7 @@ function detectGameFromText(normText) {
 }
 
 /* =========================
- * SECTION 7 — SETTINGS / Toggles
+ * SECTION 8 — SETTINGS / Toggles
  * ========================= */
 async function getSetting(key) {
   const rows = await getValues("SETTINGS!A2:B");
@@ -391,18 +315,15 @@ async function getGeminiConfig() {
 
 async function isSmartParseEnabled() {
   const v = (await getSetting("SMART_PARSE_ENABLED")).trim();
-  if (v === "") return true; // default ON
+  if (v === "") return true;
   return v === "1";
 }
 
 /* =========================
- * SECTION 8 — Game revenue data layer
+ * SECTION 9 — Game revenue layer
  * ========================= */
 async function addGameRevenue({ game, type, amount, note, chatId, userName }) {
-  await appendValues("GAME_REVENUE!A1", [
-    [nowIso(), game, type, amount, note || "", String(chatId || ""), userName || ""],
-  ]);
-
+  await appendValues("GAME_REVENUE!A1", [[nowIso(), game, type, amount, note || "", String(chatId || ""), userName || ""]]);
   try {
     await appendValues("UNDO_LOG!A1", [[nowIso(), "revenue_add", game, type, amount, note || "", String(chatId || ""), userName || ""]]);
   } catch (_) {}
@@ -420,33 +341,15 @@ async function readGameRevenue() {
 }
 
 /* =========================
- * SECTION 9 — Invite data layer + 14-day remind
+ * SECTION 10 — Invites + checkin
  * ========================= */
 async function addInvite({ game, name, email }) {
   const invitedAt = dayjs();
   const due = invitedAt.add(14, "day");
-
-  await appendValues("INVITES!A1", [
-    [
-      nowIso(),
-      game,
-      name,
-      email,
-      invitedAt.toISOString(),
-      due.toISOString(),
-      "pending",
-      0,
-      "",
-      "",
-      "",
-      "",
-    ],
-  ]);
-
+  await appendValues("INVITES!A1", [[nowIso(), game, name, email, invitedAt.toISOString(), due.toISOString(), "pending", 0, "", "", "", ""]]);
   try {
     await appendValues("UNDO_LOG!A1", [[nowIso(), "invite_add", game, name, email, due.toISOString()]]);
   } catch (_) {}
-
   return { invitedAt, due };
 }
 
@@ -454,7 +357,6 @@ async function listInvites() {
   const rows = await getValues("INVITES!A2:L");
   return rows.map((r, i) => ({
     rowNumber: i + 2,
-    ts_created: r[0] || "",
     game: (r[1] || "").toLowerCase(),
     name: r[2] || "",
     email: r[3] || "",
@@ -462,10 +364,6 @@ async function listInvites() {
     due_date: r[5] || "",
     status: (r[6] || "").toLowerCase(),
     asked: String(r[7] || "0"),
-    asked_at: r[8] || "",
-    checkin_reward: r[9] || "",
-    done_at: r[10] || "",
-    note: r[11] || "",
   }));
 }
 
@@ -474,19 +372,15 @@ async function markAsked(rowNumber) {
 }
 
 async function markDone(rowNumber, rewardAmount) {
-  await updateValues(`INVITES!G${rowNumber}:K${rowNumber}`, [
-    ["done", 1, nowIso(), rewardAmount, nowIso()],
-  ]);
+  await updateValues(`INVITES!G${rowNumber}:K${rowNumber}`, [["done", 1, nowIso(), rewardAmount, nowIso()]]);
 }
 
 async function addCheckinReward({ game, name, email, due_date, amount, chatId, userName }) {
-  await appendValues("CHECKIN_REWARD!A1", [
-    [nowIso(), game, name, email, due_date || "", amount, String(chatId || ""), userName || ""],
-  ]);
+  await appendValues("CHECKIN_REWARD!A1", [[nowIso(), game, name, email, due_date || "", amount, String(chatId || ""), userName || ""]]);
 }
 
 /* =========================
- * SECTION 10 — Wallet + Machine data layer
+ * SECTION 11 — Wallet + Machine
  * ========================= */
 async function listWallets() {
   const rows = await getValues("WALLETS!A2:B");
@@ -510,23 +404,16 @@ async function listWallets() {
 async function readWalletLog() {
   const rows = await getValues("WALLET_LOG!A2:H");
   return rows.map((r) => ({
-    ts: r[0] || "",
     wallet: String(r[1] || "").trim().toLowerCase(),
-    type: String(r[2] || "").trim().toLowerCase(),
     amount: Number(String(r[3] || "0").replace(/,/g, "")) || 0,
     ref_type: String(r[4] || "").trim().toLowerCase(),
-    ref_id: String(r[5] || "").trim(),
-    note: r[6] || "",
-    chat_id: String(r[7] || ""),
   }));
 }
 
 async function addWalletLog({ wallet, type, amount, ref_type, ref_id, note, chatId }) {
-  await appendValues("WALLET_LOG!A1", [
-    [nowIso(), wallet, type, amount, ref_type || "", ref_id || "", note || "", String(chatId || "")],
-  ]);
+  await appendValues("WALLET_LOG!A1", [[nowIso(), wallet, type, amount, ref_type || "", ref_id || "", note || "", String(chatId || "")]]);
   try {
-    await appendValues("UNDO_LOG!A1", [[nowIso(), "wallet_log_add", wallet, type, amount, ref_type || "", ref_id || "", note || "", String(chatId || "")]]);
+    await appendValues("UNDO_LOG!A1", [[nowIso(), "wallet_log_add", wallet, type, amount]]);
   } catch (_) {}
 }
 
@@ -554,15 +441,12 @@ async function nextPhoneId() {
       if (Number.isFinite(n) && n > max) max = n;
     }
   }
-  const next = max + 1;
-  return "P" + String(next).padStart(4, "0");
+  return "P" + String(max + 1).padStart(4, "0");
 }
 
 async function addPhone({ buy_price, wallet, note }) {
   const phone_id = await nextPhoneId();
-  const ts_buy = nowIso();
-  const status = "new";
-  await appendValues("PHONES!A1", [[phone_id, ts_buy, buy_price, wallet, status, note || ""]]);
+  await appendValues("PHONES!A1", [[phone_id, nowIso(), buy_price, wallet, "new", note || ""]]);
 
   await addWalletLog({
     wallet,
@@ -574,11 +458,7 @@ async function addPhone({ buy_price, wallet, note }) {
     chatId: "",
   });
 
-  try {
-    await appendValues("UNDO_LOG!A1", [[nowIso(), "phone_buy", phone_id, buy_price, wallet, note || ""]]);
-  } catch (_) {}
-
-  return { phone_id, ts_buy, status };
+  return { phone_id, status: "new" };
 }
 
 async function findPhoneRow(phone_id) {
@@ -595,26 +475,12 @@ async function findPhoneRow(phone_id) {
 async function updatePhoneStatus(phone_id, status) {
   const found = await findPhoneRow(phone_id);
   if (!found) return false;
-  const rowNumber = found.rowNumber;
-  await updateValues(`PHONES!E${rowNumber}:E${rowNumber}`, [[status]]);
+  await updateValues(`PHONES!E${found.rowNumber}:E${found.rowNumber}`, [[status]]);
   return true;
 }
 
 async function addPhoneProfitLog({ phone_id, result, amount, note, wallet, chatId }) {
   await appendValues("PHONE_PROFIT_LOG!A1", [[nowIso(), phone_id, result, amount, note || "", wallet || "", String(chatId || "")]]);
-}
-
-async function readPhoneProfitLogs() {
-  const rows = await getValues("PHONE_PROFIT_LOG!A2:G");
-  return rows.map((r) => ({
-    ts: r[0] || "",
-    phone_id: String(r[1] || "").trim().toUpperCase(),
-    result: String(r[2] || "").trim().toLowerCase(),
-    amount: Number(String(r[3] || "0").replace(/,/g, "")) || 0,
-    note: r[4] || "",
-    wallet: String(r[5] || "").trim().toLowerCase(),
-    chat_id: String(r[6] || ""),
-  }));
 }
 
 async function readPhones() {
@@ -623,21 +489,27 @@ async function readPhones() {
     .filter((r) => r.some((c) => String(c || "").trim() !== ""))
     .map((r) => ({
       phone_id: String(r[0] || "").trim().toUpperCase(),
-      ts_buy: r[1] || "",
       buy_price: Number(String(r[2] || "0").replace(/,/g, "")) || 0,
       wallet: String(r[3] || "").trim().toLowerCase(),
       status: String(r[4] || "").trim().toLowerCase(),
-      note: r[5] || "",
     }));
+}
+
+async function readPhoneProfitLogs() {
+  const rows = await getValues("PHONE_PROFIT_LOG!A2:G");
+  return rows.map((r) => ({
+    phone_id: String(r[1] || "").trim().toUpperCase(),
+    result: String(r[2] || "").trim().toLowerCase(),
+    amount: Number(String(r[3] || "0").replace(/,/g, "")) || 0,
+    wallet: String(r[5] || "").trim().toLowerCase(),
+  }));
 }
 
 async function recordMachineResult({ phone_id, result, amountAbs, note, chatId }) {
   const phone = await findPhoneRow(phone_id);
-  if (!phone) return { ok: false, error: "Máy này hổng có trong danh sách á 😭 (Kiểm tra lại phone_id nha)" };
+  if (!phone) return { ok: false, error: "Máy này hổng có trong danh sách á 😭 (Kiểm tra lại mã máy nha)" };
 
-  const row = phone.row;
-  const wallet = String(row[3] || "").trim().toLowerCase() || "unknown";
-
+  const wallet = String(phone.row[3] || "").trim().toLowerCase() || "unknown";
   let signed = 0;
   let status = "ok";
 
@@ -651,40 +523,20 @@ async function recordMachineResult({ phone_id, result, amountAbs, note, chatId }
     signed = -Math.abs(amountAbs);
     status = "tach";
   } else {
-    return { ok: false, error: "Kết quả máy không hợp lệ (loi/hue/tach) nha bạn iu 😵‍💫" };
+    return { ok: false, error: "KQ máy không hợp lệ (loi/hue/tach) nha bạn iu 😵‍💫" };
   }
 
-  await addPhoneProfitLog({
-    phone_id: String(phone_id).trim().toUpperCase(),
-    result,
-    amount: signed,
-    note: note || "",
-    wallet,
-    chatId,
-  });
+  await addPhoneProfitLog({ phone_id, result, amount: signed, note: note || "", wallet, chatId });
 
   const ledgerType = result === "loi" ? "machine_profit" : result === "tach" ? "machine_loss" : "machine_break_even";
-  await addWalletLog({
-    wallet,
-    type: ledgerType,
-    amount: signed,
-    ref_type: "phone",
-    ref_id: String(phone_id).trim().toUpperCase(),
-    note: note || "",
-    chatId,
-  });
+  await addWalletLog({ wallet, type: ledgerType, amount: signed, ref_type: "phone", ref_id: phone_id, note: note || "", chatId });
 
   await updatePhoneStatus(phone_id, status);
-
-  try {
-    await appendValues("UNDO_LOG!A1", [[nowIso(), "phone_result", phone_id, result, signed, wallet, note || "", String(chatId || "")]]);
-  } catch (_) {}
-
   return { ok: true, wallet, signed, status };
 }
 
 /* =========================
- * SECTION 11 — Reports
+ * SECTION 12 — Reports
  * ========================= */
 function monthKey(ts) {
   if (!ts) return "";
@@ -708,8 +560,8 @@ async function reportThisMonth(chatId) {
   await reportRevenueMonth(chatId, m);
 }
 
+/** ✅ FIX DỨT ĐIỂM: bỏ label rác, chỉ còn code chuẩn */
 async function reportLastMonth(chatId) {
- _toggle:
   const m = dayjs().subtract(1, "month").format("YYYY-MM");
   await reportRevenueMonth(chatId, m);
 }
@@ -738,11 +590,8 @@ async function reportStatsGames(chatId) {
 async function reportWallets(chatId) {
   const balances = await walletBalances();
   let total = 0;
-  const lines = balances.map((b) => {
-    total += b.balance;
-    return `• ${b.name} (${b.code}): ${moneyWON(b.balance)}`;
-  });
-  const out = `💼 SỐ DƯ CÁC VÍ (ledger)\n\n${lines.join("\n")}\n\nTổng: ${moneyWON(total)}`;
+  const lines = balances.map((b) => (total += b.balance, `• ${b.name} (${b.code}): ${moneyWON(b.balance)}`));
+  const out = `💼 SỐ DƯ CÁC VÍ\n\n${lines.join("\n")}\n\nTổng: ${moneyWON(total)}`;
   await send(chatId, out, { reply_markup: rightKb() });
 }
 
@@ -756,7 +605,10 @@ async function reportMachineProfit(chatId) {
   const tachCount = phones.filter((p) => p.status === "tach").length;
   const newCount = phones.filter((p) => p.status === "new").length;
 
-  let loi = 0, hue = 0, tach = 0, sumProfit = 0;
+  let loi = 0,
+    hue = 0,
+    tach = 0,
+    sumProfit = 0;
   for (const l of logs) {
     sumProfit += l.amount;
     if (l.amount > 0) loi++;
@@ -798,7 +650,7 @@ async function reportMachineProfit(chatId) {
 }
 
 /* =========================
- * SECTION 12 — Help text
+ * SECTION 13 — Help
  * ========================= */
 function helpText() {
   return (
@@ -820,18 +672,13 @@ function helpText() {
     `- vi           (xem tất cả)\n` +
     `- vi hana      (xem riêng)\n` +
     `- sodu hana 5000k  (chỉnh ví về số dư mục tiêu)\n\n` +
-    `✅ Sửa lệnh:\n` +
-    `- /edit last\n` +
-    `- /edit machine last\n\n` +
-    `✅ AI (fallback):\n` +
-    `- /ai <câu hỏi>\n\n` +
     `🧠 Smart Parse (miễn phí):\n` +
-    `- hiểu: "da bong 100k", "moi hop qua Khanh mail@gmail.com", "thu them 2k"...\n`
+    `- hiểu nhiều kiểu gõ “lỏng” mà không cần key\n`
   );
 }
 
 /* =========================
- * SECTION 13 — Reset data
+ * SECTION 14 — Reset data
  * ========================= */
 const RESET_CLEAR_RANGES = [
   "WALLETS!A2:Z",
@@ -842,7 +689,6 @@ const RESET_CLEAR_RANGES = [
   "CHECKIN_REWARD!A2:Z",
   "GAME_REVENUE!A2:Z",
   "UNDO_LOG!A2:Z",
-  "SETTINGS!A2:Z",
 ];
 
 async function resetAllData() {
@@ -856,167 +702,25 @@ async function resetAllData() {
 }
 
 /* =========================
- * SECTION 14 — Sessions
+ * SECTION 15 — Sessions
  * ========================= */
 const sessions = new Map();
-function setSession(chatId, sess) { sessions.set(String(chatId), sess); }
-function getSession(chatId) { return sessions.get(String(chatId)); }
-function clearSession(chatId) { sessions.delete(String(chatId)); }
-
-/* =========================
- * SECTION 15 — Edit last logic
- * ========================= */
-async function getLastRevenueForChat(chatId) {
-  const rows = await getValues("GAME_REVENUE!A2:G");
-  const target = String(chatId);
-  for (let i = rows.length - 1; i >= 0 && i >= rows.length - 4000; i--) {
-    const r = rows[i];
-    const game = (r[1] || "").toLowerCase();
-    const type = (r[2] || "").toLowerCase();
-    const amount = Number(String(r[3] || "0").replace(/,/g, "")) || 0;
-    const cid = String(r[5] || "");
-    if (cid === target && ["db", "hq", "qr", "other"].includes(game)) {
-      return { game, type: type || "invite_reward", amount };
-    }
-  }
-  return null;
+function setSession(chatId, sess) {
+  sessions.set(String(chatId), sess);
 }
-
-async function startEditLastRevenue(chatId) {
-  const last = await getLastRevenueForChat(chatId);
-  if (!last) {
-    await send(chatId, "🥺 Mình không thấy lệnh doanh thu gần nhất để sửa á.", { reply_markup: mainKb() });
-    return;
-  }
-  setSession(chatId, { flow: "edit_revenue", step: "amount", data: last });
-  await send(
-    chatId,
-    `✏️ SỬA DOANH THU GẦN NHẤT\nLệnh cũ: ${last.game.toUpperCase()} ${moneyWON(last.amount)}\nBạn nhập số MỚI (vd 80k) nha:`,
-    { reply_markup: mainKb() }
-  );
+function getSession(chatId) {
+  return sessions.get(String(chatId));
 }
-
-async function getLastMachineLogForChat(chatId) {
-  const rows = await getValues("PHONE_PROFIT_LOG!A2:G");
-  const target = String(chatId);
-  for (let i = rows.length - 1; i >= 0 && i >= rows.length - 4000; i--) {
-    const r = rows[i];
-    const phone_id = String(r[1] || "").trim().toUpperCase();
-    const result = String(r[2] || "").trim().toLowerCase();
-    const amount = Number(String(r[3] || "0").replace(/,/g, "")) || 0;
-    const wallet = String(r[5] || "").trim().toLowerCase();
-    const cid = String(r[6] || "");
-    if (cid === target && phone_id) {
-      return { phone_id, result, amount, wallet };
-    }
-  }
-  return null;
-}
-
-async function startEditLastMachine(chatId) {
-  const last = await getLastMachineLogForChat(chatId);
-  if (!last) {
-    await send(chatId, "🥺 Mình không thấy log máy gần nhất để sửa á.", { reply_markup: mainKb() });
-    return;
-  }
-  setSession(chatId, { flow: "edit_machine", step: "amount", data: last });
-  const oldDisplay = moneyWON(Math.abs(last.amount));
-  await send(
-    chatId,
-    `✏️ SỬA LOG MÁY GẦN NHẤT\nMáy: ${last.phone_id}\nKết quả: ${last.result}\nSố cũ: ${oldDisplay}\nBạn nhập số MỚI (vd 300k). (hue nhập 0) nha~`,
-    { reply_markup: mainKb() }
-  );
+function clearSession(chatId) {
+  sessions.delete(String(chatId));
 }
 
 /* =========================
- * SECTION 16 — Cron remind 14-day
- * ========================= */
-const awaitingCheckin = new Map();
-
-async function markAsked(rowNumber) {
-  await updateValues(`INVITES!H${rowNumber}:I${rowNumber}`, [[1, nowIso()]]);
-}
-async function markDone(rowNumber, rewardAmount) {
-  await updateValues(`INVITES!G${rowNumber}:K${rowNumber}`, [["done", 1, nowIso(), rewardAmount, nowIso()]]);
-}
-
-async function askCheckin(inv) {
-  if (!ADMIN_TELEGRAM_ID) return;
-  const label = inv.game === "hq" ? "🎁 Hộp quà" : "🔳 QR";
-  awaitingCheckin.set(ADMIN_TELEGRAM_ID, inv);
-
-  await send(
-    ADMIN_TELEGRAM_ID,
-    `⏰ Tới hạn 14 ngày rồi nè!\n${label}: ${inv.name} (${inv.email})\nBạn reply số tiền (vd: 60k) nha~`,
-    { reply_markup: mainKb() }
-  );
-
-  await markAsked(inv.rowNumber);
-}
-
-cron.schedule("*/10 * * * *", async () => {
-  try {
-    if (!ADMIN_TELEGRAM_ID) return;
-    const invites = await listInvites();
-    const now = dayjs();
-
-    const dueList = invites.filter((x) => {
-      if (x.status !== "pending") return false;
-      if (x.asked === "1") return false;
-      if (!x.due_date) return false;
-      const d = dayjs(x.due_date);
-      return d.isBefore(now) || d.isSame(now);
-    });
-
-    for (const inv of dueList.slice(0, 5)) {
-      await askCheckin(inv);
-    }
-  } catch (e) {
-    console.error("CRON ERROR:", e?.message || e);
-  }
-});
-
-/* =========================
- * SECTION 17 — Gemini API (fallback)
- * ========================= */
-async function geminiGenerate(apiKey, model, prompt, responseMimeType = null) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-  const body = {
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: responseMimeType ? { responseMimeType } : undefined,
-  };
-  const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  const json = await resp.json().catch(() => ({}));
-  if (!resp.ok) {
-    const msg = json?.error?.message || json?.message || `Gemini HTTP ${resp.status}`;
-    throw new Error(msg);
-  }
-  const text = json?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
-  return text.trim();
-}
-
-function buildGeminiParsePrompt(userText) {
-  return (
-    "Bạn là bộ phân tích lệnh cho bot TikTok Lite. Trả về DUY NHẤT 1 object JSON.\n\n" +
-    "action hợp lệ:\n" +
-    '{"action":"revenue","game":"db|hq|qr|other","amount":<number>}\n' +
-    '{"action":"invite","game":"hq|qr","name":"...","email":"..."}\n' +
-    '{"action":"machine_buy","price":<number>,"wallet":"hana|uri|kt","note":"..."}\n' +
-    '{"action":"machine_result","phone_id":"P0001","result":"loi|hue|tach","amount":<number>,"note":"..."}\n' +
-    '{"action":"wallet_adjust","wallet":"hana|uri|kt","target":<number>}\n' +
-    '{"action":"unknown"}\n\n' +
-    "Quy ước:\n- amount/price/target là số WON.\n- 'tach' là lỗ.\n\n" +
-    `Input: ${userText}\nJSON:`
-  );
-}
-
-/* =========================
- * SECTION 18 — Smart Parse (FREE)
+ * SECTION 16 — Smart Parse (FREE)
  * ========================= */
 function detectWalletFromText(normText) {
   const t = ` ${normText} `;
-  const candidates = [" hana ", " uri ", " kt "];
-  for (const c of candidates) if (t.includes(c)) return c.trim();
+  for (const c of [" hana ", " uri ", " kt "]) if (t.includes(c)) return c.trim();
   return "";
 }
 function detectPhoneIdFromText(text) {
@@ -1090,13 +794,12 @@ function smartParse(text) {
 }
 
 /* =========================
- * SECTION 19 — Strict command parsing
+ * SECTION 17 — Strict command parsing
  * ========================= */
 function parseStrictCommand(text) {
   const raw = String(text || "").trim();
   const parts = raw.split(/\s+/).filter(Boolean);
   const cmd = (parts[0] || "").toLowerCase();
-
   const gameMap = { dabong: "db", db: "db", hopqua: "hq", hq: "hq", qr: "qr" };
 
   if (cmd === "them") {
@@ -1149,26 +852,26 @@ function parseStrictCommand(text) {
 }
 
 /* =========================
- * SECTION 20 — Action executors
+ * SECTION 18 — Execute actions
  * ========================= */
-async function executeAction(chatId, userName, actionObj) {
-  const a = actionObj;
-
+async function executeAction(chatId, userName, a) {
   if (a.action === "revenue") {
     const game = a.game;
     const amount = a.amount;
     const type = game === "other" ? "other" : "invite_reward";
     await addGameRevenue({ game, type, amount, note: a.note || "input", chatId, userName });
     await send(chatId, `✅ Đã ghi doanh thu ${game.toUpperCase()}: ${moneyWON(amount)}`, { reply_markup: mainKb() });
-    return { ok: true };
+    return true;
   }
 
   if (a.action === "invite") {
     const { due } = await addInvite({ game: a.game, name: a.name, email: a.email });
-    await send(chatId, `✅ Đã lưu INVITE ${a.game.toUpperCase()}:\n- ${a.name}\n- ${a.email}\n- Due: ${dayjs(due).format("DD/MM/YYYY")}\n\n⏰ Tới hạn mình sẽ nhắc liền!`, {
-      reply_markup: mainKb(),
-    });
-    return { ok: true };
+    await send(
+      chatId,
+      `✅ Đã lưu INVITE ${a.game.toUpperCase()}:\n- ${a.name}\n- ${a.email}\n- Due: ${dayjs(due).format("DD/MM/YYYY")}\n\n⏰ Tới hạn mình nhắc liền!`,
+      { reply_markup: mainKb() }
+    );
+    return true;
   }
 
   if (a.action === "wallet_view") {
@@ -1177,16 +880,16 @@ async function executeAction(chatId, userName, actionObj) {
       let total = 0;
       const lines = balances.map((b) => (total += b.balance, `• ${b.name} (${b.code}): ${moneyWON(b.balance)}`));
       await send(chatId, `💼 SỐ DƯ CÁC VÍ\n\n${lines.join("\n")}\n\nTổng: ${moneyWON(total)}`, { reply_markup: rightKb() });
-      return { ok: true };
+      return true;
     }
     const w = String(a.wallet).trim().toLowerCase();
     const found = balances.find((b) => b.code === w);
     if (!found) {
-      await send(chatId, `🥺 Mình không tìm thấy ví '${w}' á.`, { reply_markup: rightKb() });
-      return { ok: true };
+      await send(chatId, `🥺 Mình không thấy ví '${w}' á.`, { reply_markup: rightKb() });
+      return true;
     }
     await send(chatId, `💼 VÍ ${found.name} (${found.code})\n= ${moneyWON(found.balance)}`, { reply_markup: rightKb() });
-    return { ok: true };
+    return true;
   }
 
   if (a.action === "wallet_adjust") {
@@ -1194,15 +897,14 @@ async function executeAction(chatId, userName, actionObj) {
     const target = Number(a.target);
     if (!wallet || !Number.isFinite(target)) {
       await send(chatId, "Sai cú pháp chỉnh ví. Ví dụ: sodu hana 5000k", { reply_markup: rightKb() });
-      return { ok: true };
+      return true;
     }
     const balances = await walletBalances();
     const cur = balances.find((b) => b.code === wallet)?.balance ?? 0;
     const delta = Math.round(target) - cur;
-
     await addWalletLog({ wallet, type: "adjust", amount: delta, ref_type: "wallet", ref_id: wallet, note: "ADJUST_TO_TARGET", chatId });
     await send(chatId, `✅ Đã chỉnh ví ${wallet}: ${moneyWON(cur)} → ${moneyWON(Math.round(target))}`, { reply_markup: rightKb() });
-    return { ok: true };
+    return true;
   }
 
   if (a.action === "machine_buy") {
@@ -1211,11 +913,11 @@ async function executeAction(chatId, userName, actionObj) {
     const note = a.note || "";
     if (!Number.isFinite(price) || price <= 0 || !wallet) {
       await send(chatId, "Sai cú pháp mua máy. Ví dụ: muamay 1200k hana", { reply_markup: leftKb() });
-      return { ok: true };
+      return true;
     }
     const r = await addPhone({ buy_price: Math.round(price), wallet, note });
     await send(chatId, `✅ Đã mua máy: ${r.phone_id}\nGiá: ${moneyWON(Math.round(price))}\nVí: ${wallet}\nTrạng thái: ${r.status}`, { reply_markup: leftKb() });
-    return { ok: true };
+    return true;
   }
 
   if (a.action === "machine_result") {
@@ -1226,178 +928,157 @@ async function executeAction(chatId, userName, actionObj) {
 
     if (!phone_id || !["loi", "hue", "tach"].includes(result)) {
       await send(chatId, "Sai cú pháp máy. Ví dụ: mayloi P0001 300k", { reply_markup: leftKb() });
-      return { ok: true };
+      return true;
     }
     const amountAbs = result === "hue" ? 0 : Math.round(Math.abs(amount));
     if (result !== "hue" && (!Number.isFinite(amountAbs) || amountAbs <= 0)) {
       await send(chatId, "Sai số tiền. Ví dụ: maytach P0001 800k", { reply_markup: leftKb() });
-      return { ok: true };
+      return true;
     }
 
     const rr = await recordMachineResult({ phone_id, result, amountAbs, note, chatId });
     if (!rr.ok) {
       await send(chatId, rr.error, { reply_markup: leftKb() });
-      return { ok: true };
+      return true;
     }
-
     const shown = result === "hue" ? "₩0" : moneyWON(Math.abs(rr.signed));
     await send(chatId, `✅ Đã ghi kết quả máy ${phone_id}\nKQ: ${result}\nTiền: ${shown}\nVí: ${rr.wallet}\nStatus: ${rr.status}`, { reply_markup: leftKb() });
-    return { ok: true };
+    return true;
   }
 
-  return { ok: false };
+  return false;
 }
 
 /* =========================
- * SECTION 21 — Session input handler
+ * SECTION 19 — RESET flow + guided flows
  * ========================= */
 async function handleSessionInput(chatId, userName, text) {
   const sess = getSession(chatId);
-  if (!sess) return { handled: false };
+  if (!sess) return false;
 
-  // RESET flow (PASS hidden prompt)
   if (sess.flow === "reset" && sess.step === "pass") {
     clearSession(chatId);
     if (text !== RESET_PASS) {
       await send(chatId, "Nhập sai rồi bạn iu ơi ^^  (Nếu cần thì hỏi admin xin pass nha 😝)", { reply_markup: rightKb() });
-      return { handled: true };
+      return true;
     }
     await send(chatId, "⏳ Đang xóa sạch dữ liệu... (rụng tim nhẹ 😵‍💫)", { reply_markup: rightKb() });
     await resetAllData();
     await send(chatId, "🎉 Done! Dữ liệu đã sạch bong kin kít. Chạy lại từ đầu thôi nè~", { reply_markup: mainKb() });
-    return { handled: true };
+    return true;
   }
 
-  // Gemini key flow
-  if (sess.flow === "gemini_key" && sess.step === "key") {
-    clearSession(chatId);
-    const key = String(text || "").trim();
-    if (key.length < 20) {
-      await send(chatId, "Key này nhìn hơi sai sai á 😵‍💫 Bạn dán lại Gemini API Key giúp mình nha~", { reply_markup: rightKb() });
-      return { handled: true };
-    }
-    await setSetting("GEMINI_API_KEY", key);
-    const m = (await getSetting("GEMINI_MODEL")).trim();
-    if (!m) await setSetting("GEMINI_MODEL", "gemini-2.0-flash");
-    await send(chatId, "✅ Đã lưu Gemini Key rồi nè! (mình thông minh lên 1 xíu 😚)", { reply_markup: rightKb() });
-    return { handled: true };
-  }
-
-  // Invite flow
   if (sess.flow === "invite") {
     if (sess.step === "name") {
       const name = String(text || "").trim();
       if (name.length < 2) {
         await send(chatId, "Tên này hơi ngắn á 😝 Bạn nhập lại TÊN nha~", { reply_markup: leftKb() });
-        return { handled: true };
+        return true;
       }
+      sess.data = sess.data || {};
       sess.data.name = name;
       sess.step = "email";
       setSession(chatId, sess);
       await send(chatId, "Giờ bạn nhập EMAIL nha~", { reply_markup: leftKb() });
-      return { handled: true };
+      return true;
     }
     if (sess.step === "email") {
       const email = String(text || "").trim();
       if (!isEmail(email)) {
         await send(chatId, "Email này chưa chuẩn á 🥺 Bạn nhập lại EMAIL giúp mình nha~", { reply_markup: leftKb() });
-        return { handled: true };
+        return true;
       }
       const { due } = await addInvite({ game: sess.game, name: sess.data.name, email });
       clearSession(chatId);
       await send(chatId, `✅ INVITE okela!\nGame: ${sess.game.toUpperCase()}\nTên: ${sess.data.name}\nMail: ${email}\nDue: ${dayjs(due).format("DD/MM/YYYY")}`, {
         reply_markup: leftKb(),
       });
-      return { handled: true };
+      return true;
     }
   }
 
-  // Revenue flow
   if (sess.flow === "revenue" && sess.step === "amount") {
     const amt = parseMoney(text);
     if (amt == null) {
       await send(chatId, "Sai tiền rồi bạn iu ơi ^^ Ví dụ: 100k / 0.5k / 100000", { reply_markup: leftKb() });
-      return { handled: true };
+      return true;
     }
     await executeAction(chatId, userName, { action: "revenue", game: sess.game, amount: amt, note: "menu" });
     clearSession(chatId);
-    return { handled: true };
+    return true;
   }
 
-  // Wallet adjust flow
   if (sess.flow === "wallet_adjust") {
     if (sess.step === "wallet") {
       const w = String(text || "").trim().toLowerCase();
       if (!w) {
         await send(chatId, "Bạn nhập mã ví giúp mình nha~ (hana / uri / kt)", { reply_markup: rightKb() });
-        return { handled: true };
+        return true;
       }
-      sess.data.wallet = w;
+      sess.data = { wallet: w };
       sess.step = "amount";
       setSession(chatId, sess);
       await send(chatId, "Nhập số dư MỤC TIÊU nha~ (vd 5000k)", { reply_markup: rightKb() });
-      return { handled: true };
+      return true;
     }
     if (sess.step === "amount") {
       const amt = parseMoney(text);
       if (amt == null) {
         await send(chatId, "Sai tiền rồi nè 🥺 Bạn nhập lại (vd 5000k) nha~", { reply_markup: rightKb() });
-        return { handled: true };
+        return true;
       }
       await executeAction(chatId, userName, { action: "wallet_adjust", wallet: sess.data.wallet, target: amt });
       clearSession(chatId);
-      return { handled: true };
+      return true;
     }
   }
 
-  // Machine buy flow
   if (sess.flow === "machine_buy") {
     if (sess.step === "price") {
       const price = parseMoney(text);
       if (price == null || price <= 0) {
         await send(chatId, "Giá này hông ổn á 😝 Bạn nhập GIÁ mua (vd 1200k) nha~", { reply_markup: leftKb() });
-        return { handled: true };
+        return true;
       }
-      sess.data.price = price;
+      sess.data = { price };
       sess.step = "wallet";
       setSession(chatId, sess);
       await send(chatId, "Nhập ví dùng để mua (hana / uri / kt) nha~", { reply_markup: leftKb() });
-      return { handled: true };
+      return true;
     }
     if (sess.step === "wallet") {
       const w = String(text || "").trim().toLowerCase();
       if (!w) {
         await send(chatId, "Bạn nhập mã ví (hana / uri / kt) giúp mình nha~", { reply_markup: leftKb() });
-        return { handled: true };
+        return true;
       }
       sess.data.wallet = w;
       sess.step = "note";
       setSession(chatId, sess);
       await send(chatId, "Nhập ghi chú (hoặc gõ '-' để bỏ qua) nha~", { reply_markup: leftKb() });
-      return { handled: true };
+      return true;
     }
     if (sess.step === "note") {
       const note = String(text || "").trim();
       const finalNote = note === "-" ? "" : note;
       await executeAction(chatId, userName, { action: "machine_buy", price: sess.data.price, wallet: sess.data.wallet, note: finalNote });
       clearSession(chatId);
-      return { handled: true };
+      return true;
     }
   }
 
-  // Machine result flow
   if (sess.flow === "machine_result") {
     if (sess.step === "phone") {
       const pid = String(text || "").trim().toUpperCase();
       if (!pid.match(/^P\d{1,6}$/)) {
         await send(chatId, "Mã máy sai rồi bạn iu ơi ^^ Ví dụ: P0001", { reply_markup: leftKb() });
-        return { handled: true };
+        return true;
       }
-      sess.data.phone_id = pid;
+      sess.data = { phone_id: pid };
       sess.step = "result";
       setSession(chatId, sess);
       await send(chatId, "Nhập kết quả: loi / hue / tach nha~", { reply_markup: leftKb() });
-      return { handled: true };
+      return true;
     }
     if (sess.step === "result") {
       const r = normalizeForParse(text);
@@ -1408,7 +1089,7 @@ async function handleSessionInput(chatId, userName, text) {
 
       if (!["loi", "hue", "tach"].includes(result)) {
         await send(chatId, "Kết quả này mình hổng hiểu á 😵‍💫 Nhập: loi / hue / tach nha~", { reply_markup: leftKb() });
-        return { handled: true };
+        return true;
       }
       sess.data.result = result;
 
@@ -1417,100 +1098,79 @@ async function handleSessionInput(chatId, userName, text) {
         sess.step = "note";
         setSession(chatId, sess);
         await send(chatId, "Nhập ghi chú (hoặc '-' để bỏ qua) nha~", { reply_markup: leftKb() });
-        return { handled: true };
+        return true;
       }
 
       sess.step = "amount";
       setSession(chatId, sess);
       await send(chatId, "Nhập số tiền (vd 300k). (tạch nhập số dương) nha~", { reply_markup: leftKb() });
-      return { handled: true };
+      return true;
     }
     if (sess.step === "amount") {
       const amt = parseMoney(text);
       if (amt == null || amt < 0) {
         await send(chatId, "Sai tiền rồi bạn iu ơi ^^ Nhập lại (vd 300k) nha~", { reply_markup: leftKb() });
-        return { handled: true };
+        return true;
       }
       sess.data.amount = amt;
       sess.step = "note";
       setSession(chatId, sess);
       await send(chatId, "Nhập ghi chú (hoặc '-' để bỏ qua) nha~", { reply_markup: leftKb() });
-      return { handled: true };
+      return true;
     }
     if (sess.step === "note") {
       const note = String(text || "").trim();
       const finalNote = note === "-" ? "" : note;
       await executeAction(chatId, userName, { action: "machine_result", phone_id: sess.data.phone_id, result: sess.data.result, amount: sess.data.amount, note: finalNote });
       clearSession(chatId);
-      return { handled: true };
+      return true;
     }
   }
 
-  // Edit revenue
-  if (sess.flow === "edit_revenue" && sess.step === "amount") {
-    const newAmt = parseMoney(text);
-    if (newAmt == null) {
-      await send(chatId, "Sai tiền rồi bạn iu ơi ^^ Nhập lại (vd 80k) nha~", { reply_markup: mainKb() });
-      return { handled: true };
-    }
-    const old = sess.data;
-    await addGameRevenue({ game: old.game, type: "adjust", amount: -old.amount, note: "EDIT_LAST_REMOVE", chatId, userName });
-    await addGameRevenue({ game: old.game, type: "adjust", amount: newAmt, note: "EDIT_LAST_ADD", chatId, userName });
-    clearSession(chatId);
-    await send(chatId, `✅ Sửa xong nè!\n${old.game.toUpperCase()}: ${moneyWON(old.amount)} → ${moneyWON(newAmt)}`, { reply_markup: mainKb() });
-    return { handled: true };
-  }
-
-  // Edit machine
-  if (sess.flow === "edit_machine" && sess.step === "amount") {
-    const newAbs = parseMoney(text);
-    if (newAbs == null || newAbs < 0) {
-      await send(chatId, "Sai tiền rồi bạn iu ơi ^^ Nhập lại (vd 300k) nha~", { reply_markup: mainKb() });
-      return { handled: true };
-    }
-    const old = sess.data;
-    const phone_id = old.phone_id;
-    let newSigned = 0;
-    if (old.result === "loi") newSigned = Math.abs(newAbs);
-    if (old.result === "tach") newSigned = -Math.abs(newAbs);
-    if (old.result === "hue") newSigned = 0;
-
-    const wallet = old.wallet || "unknown";
-    await addPhoneProfitLog({ phone_id, result: "adjust", amount: -old.amount, note: "EDIT_MACHINE_REMOVE", wallet, chatId });
-    await addWalletLog({ wallet, type: "adjust", amount: -old.amount, ref_type: "phone", ref_id: phone_id, note: "EDIT_MACHINE_REMOVE", chatId });
-    await addPhoneProfitLog({ phone_id, result: "adjust", amount: newSigned, note: "EDIT_MACHINE_ADD", wallet, chatId });
-    await addWalletLog({ wallet, type: "adjust", amount: newSigned, ref_type: "phone", ref_id: phone_id, note: "EDIT_MACHINE_ADD", chatId });
-
-    clearSession(chatId);
-    await send(chatId, `✅ Sửa log máy xong nè!\n${phone_id}: ${moneyWON(Math.abs(old.amount))} → ${moneyWON(Math.abs(newSigned))}`, { reply_markup: mainKb() });
-    return { handled: true };
-  }
-
-  return { handled: false };
+  return false;
 }
 
 /* =========================
- * SECTION 22 — Admin checkin reply handling
+ * SECTION 20 — Cron remind 14-day
  * ========================= */
-async function handleAdminCheckinReply(chatId, userName, text) {
-  if (!ADMIN_TELEGRAM_ID) return { handled: false };
-  if (String(chatId) !== String(ADMIN_TELEGRAM_ID)) return { handled: false };
-  const inv = awaitingCheckin.get(ADMIN_TELEGRAM_ID);
-  if (!inv) return { handled: false };
-  const amt = parseMoney(text);
-  if (amt == null) return { handled: false };
+const awaitingCheckin = new Map();
 
-  await addCheckinReward({ game: inv.game, name: inv.name, email: inv.email, due_date: inv.due_date, amount: amt, chatId, userName });
-  await addGameRevenue({ game: inv.game, type: "checkin", amount: amt, note: `${inv.name} ${inv.email}`, chatId, userName });
-  await markDone(inv.rowNumber, amt);
-  awaitingCheckin.delete(ADMIN_TELEGRAM_ID);
-
-  await send(chatId, `✅ Check-in ${inv.game.toUpperCase()} ${inv.name}: ${moneyWON(amt)}`, { reply_markup: mainKb() });
-  return { handled: true };
+async function askCheckin(inv) {
+  if (!ADMIN_TELEGRAM_ID) return;
+  awaitingCheckin.set(ADMIN_TELEGRAM_ID, inv);
+  const label = inv.game === "hq" ? "🎁 Hộp quà" : "🔳 QR";
+  await send(
+    ADMIN_TELEGRAM_ID,
+    `⏰ Tới hạn 14 ngày rồi nè!\n${label}: ${inv.name} (${inv.email})\nBạn reply số tiền (vd: 60k) nha~`,
+    { reply_markup: mainKb() }
+  );
+  await markAsked(inv.rowNumber);
 }
 
+cron.schedule("*/10 * * * *", async () => {
+  try {
+    if (!ADMIN_TELEGRAM_ID) return;
+    const invites = await listInvites();
+    const now = dayjs();
+
+    const dueList = invites.filter((x) => {
+      if (x.status !== "pending") return false;
+      if (x.asked === "1") return false;
+      if (!x.due_date) return false;
+      const d = dayjs(x.due_date);
+      return d.isBefore(now) || d.isSame(now);
+    });
+
+    for (const inv of dueList.slice(0, 5)) {
+      await askCheckin(inv);
+    }
+  } catch (e) {
+    console.error("CRON ERROR:", e?.message || e);
+  }
+});
+
 /* =========================
- * SECTION 23 — Main text handler
+ * SECTION 21 — Webhook handler
  * ========================= */
 async function handleTextMessage(msg) {
   const chatId = msg.chat?.id;
@@ -1519,47 +1179,33 @@ async function handleTextMessage(msg) {
   const text = String(msg.text || "").trim();
   if (!text) return;
 
-  // Admin checkin direct reply
-  const adminHandled = await handleAdminCheckinReply(chatId, userName, text);
-  if (adminHandled.handled) return;
+  // Admin checkin reply
+  if (ADMIN_TELEGRAM_ID && String(chatId) === String(ADMIN_TELEGRAM_ID)) {
+    const inv = awaitingCheckin.get(ADMIN_TELEGRAM_ID);
+    if (inv) {
+      const amt = parseMoney(text);
+      if (amt != null) {
+        await addCheckinReward({ game: inv.game, name: inv.name, email: inv.email, due_date: inv.due_date, amount: amt, chatId, userName });
+        await addGameRevenue({ game: inv.game, type: "checkin", amount: amt, note: `${inv.name} ${inv.email}`, chatId, userName });
+        await markDone(inv.rowNumber, amt);
+        awaitingCheckin.delete(ADMIN_TELEGRAM_ID);
+        await send(chatId, `✅ Check-in ${inv.game.toUpperCase()} ${inv.name}: ${moneyWON(amt)}`, { reply_markup: mainKb() });
+        return;
+      }
+    }
+  }
 
-  // System commands
   if (text === "/start") {
     clearSession(chatId);
     await send(chatId, `✅ Bot sẵn sàng (${VERSION})\nGọi mình là “bé bot” cũng được 😝`, { reply_markup: mainKb() });
     return;
   }
+
   if (text === "/help") {
     await send(chatId, helpText(), { reply_markup: mainKb() });
     return;
   }
-  if (text === "/edit last") {
-    await startEditLastRevenue(chatId);
-    return;
-  }
-  if (text === "/edit machine last") {
-    await startEditLastMachine(chatId);
-    return;
-  }
 
-  // /ai direct
-  if (text.startsWith("/ai ")) {
-    const q = text.slice(4).trim();
-    const { apiKey, model } = await getGeminiConfig();
-    if (!apiKey) {
-      await send(chatId, "Bạn chưa có Gemini Key á 😭 Vào ➡️ Menu → 🔑 Nhập Gemini Key nha~", { reply_markup: rightKb() });
-      return;
-    }
-    try {
-      const ans = await geminiGenerate(apiKey, model, q, null);
-      await send(chatId, `🤖 ${ans}`, { reply_markup: mainKb(), __raw: true }); // raw to avoid changing AI content
-    } catch (e) {
-      await send(chatId, `UI UI AI bị ngáo xíu: ${e?.message || e}`, { reply_markup: mainKb() });
-    }
-    return;
-  }
-
-  // Menu navigation
   if (text === "⬅️ Menu") {
     clearSession(chatId);
     await send(chatId, "⬅️ Menu Trái đây nè~ (nhập liệu siêu nhanh) ⚡", { reply_markup: leftKb() });
@@ -1585,7 +1231,7 @@ async function handleTextMessage(msg) {
   if (text === "💼 Xem Ví") return reportWallets(chatId);
 
   if (text === "🧾 Chỉnh Số Dư Ví") {
-    setSession(chatId, { flow: "wallet_adjust", step: "wallet", data: {} });
+    setSession(chatId, { flow: "wallet_adjust", step: "wallet" });
     await send(chatId, "Bạn nhập mã ví cần chỉnh (hana / uri / kt) nha~", { reply_markup: rightKb() });
     return;
   }
@@ -1595,34 +1241,10 @@ async function handleTextMessage(msg) {
     return;
   }
 
-  if (text === "🔑 Nhập Gemini Key") {
-    setSession(chatId, { flow: "gemini_key", step: "key" });
-    await send(chatId, "Bạn dán Gemini API Key vào đây nha~ 🔑", { reply_markup: rightKb() });
-    return;
-  }
-
-  if (text === "🤖 AI: Bật/Tắt") {
-    const { enabled } = await getGeminiConfig();
-    await setSetting("GEMINI_ENABLED", enabled ? "0" : "1");
-    await send(chatId, `🤖 AI đã ${(enabled ? "TẮT" : "BẬT")} rồi nè~`, { reply_markup: rightKb() });
-    return;
-  }
-
-  if (text === "🧠 Smart Parse: Bật/Tắt") {
-    const cur = await isSmartParseEnabled();
-    await setSetting("SMART_PARSE_ENABLED", cur ? "0" : "1");
-    await send(chatId, `🧠 Smart Parse đã ${(cur ? "TẮT" : "BẬT")} rồi nè~ (mình hiểu bạn hơn đó 😚)`, { reply_markup: rightKb() });
-    return;
-  }
-
-  // ✅ PASS hidden here (as you requested)
+  // ✅ PASS hidden (không lộ 12345)
   if (text === "🧨 Xóa Sạch Dữ Liệu") {
     setSession(chatId, { flow: "reset", step: "pass" });
-    await send(
-      chatId,
-      "⚠️ Khu vực nguy hiểm nha bạn iu 😵‍💫\n🔐 Vui lòng điền pass để XÓA SẠCH dữ liệu ^^",
-      { reply_markup: rightKb() }
-    );
+    await send(chatId, "⚠️ Khu vực nguy hiểm nha bạn iu 😵‍💫\n🔐 Vui lòng điền pass để XÓA SẠCH dữ liệu ^^", { reply_markup: rightKb() });
     return;
   }
 
@@ -1638,39 +1260,38 @@ async function handleTextMessage(msg) {
     return;
   }
   if (text === "⚽ Thu Đá Bóng") {
-    setSession(chatId, { flow: "revenue", game: "db", step: "amount", data: {} });
+    setSession(chatId, { flow: "revenue", game: "db", step: "amount" });
     await send(chatId, "⚽ Thu Đá Bóng – bạn nhập SỐ TIỀN (vd 100k) nha~", { reply_markup: leftKb() });
     return;
   }
   if (text === "🎁 Thu Hộp Quà") {
-    setSession(chatId, { flow: "revenue", game: "hq", step: "amount", data: {} });
+    setSession(chatId, { flow: "revenue", game: "hq", step: "amount" });
     await send(chatId, "🎁 Thu Hộp Quà – bạn nhập SỐ TIỀN (vd 200k) nha~", { reply_markup: leftKb() });
     return;
   }
   if (text === "🔳 Thu QR") {
-    setSession(chatId, { flow: "revenue", game: "qr", step: "amount", data: {} });
+    setSession(chatId, { flow: "revenue", game: "qr", step: "amount" });
     await send(chatId, "🔳 Thu QR – bạn nhập SỐ TIỀN (vd 57k) nha~", { reply_markup: leftKb() });
     return;
   }
   if (text === "➕ Thu Khác") {
-    setSession(chatId, { flow: "revenue", game: "other", step: "amount", data: {} });
+    setSession(chatId, { flow: "revenue", game: "other", step: "amount" });
     await send(chatId, "➕ Thu Khác – bạn nhập SỐ TIỀN (vd 0.5k) nha~", { reply_markup: leftKb() });
     return;
   }
   if (text === "📱 Mua Máy") {
-    setSession(chatId, { flow: "machine_buy", step: "price", data: {} });
+    setSession(chatId, { flow: "machine_buy", step: "price" });
     await send(chatId, "📱 Mua Máy – bạn nhập GIÁ (vd 1200k) nha~", { reply_markup: leftKb() });
     return;
   }
   if (text === "✅ KQ Máy (Lời/Huề/Tạch)") {
-    setSession(chatId, { flow: "machine_result", step: "phone", data: {} });
+    setSession(chatId, { flow: "machine_result", step: "phone" });
     await send(chatId, "✅ Kết Quả Máy – bạn nhập MÃ MÁY (vd P0001) nha~", { reply_markup: leftKb() });
     return;
   }
 
   // Session handler
-  const sessHandled = await handleSessionInput(chatId, userName, text);
-  if (sessHandled.handled) return;
+  if (await handleSessionInput(chatId, userName, text)) return;
 
   // Strict commands
   const strict = parseStrictCommand(text);
@@ -1680,170 +1301,41 @@ async function handleTextMessage(msg) {
   }
 
   // Smart Parse
-  const smartEnabled = await isSmartParseEnabled();
-  if (smartEnabled) {
+  if (await isSmartParseEnabled()) {
     const sp = smartParse(text);
 
-    if (sp.action === "wallet_view") return executeAction(chatId, userName, sp);
-    if (sp.action === "wallet_adjust") return executeAction(chatId, userName, sp);
-
-    if (sp.action === "wallet_adjust_incomplete") {
-      setSession(chatId, { flow: "wallet_adjust", step: "wallet", data: {} });
-      await send(chatId, "🧠 Mình hiểu sơ sơ rồi… bạn cho mình mã ví (hana/uri/kt) nha~", { reply_markup: rightKb() });
-      return;
-    }
-
-    if (sp.action === "machine_buy") return executeAction(chatId, userName, sp);
-    if (sp.action === "machine_buy_incomplete") {
-      setSession(chatId, { flow: "machine_buy", step: "price", data: {} });
-      await send(chatId, "🧠 Thiếu info mua máy rồi nè~ bạn nhập GIÁ (vd 1200k) nha~", { reply_markup: leftKb() });
-      return;
-    }
-
-    if (sp.action === "machine_result") return executeAction(chatId, userName, sp);
-    if (sp.action === "machine_result_incomplete") {
-      setSession(chatId, { flow: "machine_result", step: "phone", data: {} });
-      await send(chatId, "🧠 Thiếu info máy rồi nè~ bạn nhập MÃ MÁY (vd P0001) nha~", { reply_markup: leftKb() });
-      return;
-    }
-
-    if (sp.action === "invite") {
-      if (sp.name === "NoName") {
-        setSession(chatId, { flow: "invite", game: sp.game, step: "name", data: { email: sp.email } });
-        await send(chatId, `🧠 Mình thấy email rồi nè: ${sp.email}\nGiờ bạn nhập TÊN nha~`, { reply_markup: leftKb() });
-        return;
-      }
-      return executeAction(chatId, userName, sp);
-    }
-
-    if (sp.action === "revenue") return executeAction(chatId, userName, sp);
+    if (sp.action === "wallet_view") return void (await executeAction(chatId, userName, sp));
+    if (sp.action === "wallet_adjust") return void (await executeAction(chatId, userName, sp));
+    if (sp.action === "machine_buy") return void (await executeAction(chatId, userName, sp));
+    if (sp.action === "machine_result") return void (await executeAction(chatId, userName, sp));
+    if (sp.action === "invite") return void (await executeAction(chatId, userName, sp));
+    if (sp.action === "revenue") return void (await executeAction(chatId, userName, sp));
   }
 
-  // Unknown (as you requested)
+  // Unknown message (as you asked)
   await send(
     chatId,
-    "Nhập sai rồi bạn iu ơi ^^  Vào ➡️ Menu → 📘 Hướng dẫn nha~\n(hoặc bật 🧠 Smart Parse/🤖 AI để mình hiểu bạn hơn 😚)",
-    { reply_markup: mainKb(), __raw: true } // raw because we already made it cute exactly as desired
+    "Nhập sai rồi bạn iu ơi ^^  Vào ➡️ Menu → 📘 Hướng dẫn nha~\n(hoặc bật 🧠 Smart Parse để mình hiểu bạn hơn 😚)",
+    { reply_markup: mainKb(), __raw: true }
   );
 }
 
 /* =========================
- * SECTION 24 — Webhook endpoint
+ * SECTION 22 — Webhook route
  * ========================= */
 app.post("/webhook", async (req, res) => {
   res.sendStatus(200);
   try {
-    const body = req.body;
-    if (body?.message) await handleTextMessage(body.message);
+    if (req.body?.message) await handleTextMessage(req.body.message);
   } catch (e) {
     console.error("WEBHOOK ERROR:", e?.message || e);
   }
 });
 
 /* =========================
- * SECTION 25 — Boot server (RENDER TIMEOUT FIX)
+ * SECTION 23 — BOOT (Render stable)
  * ========================= */
 const PORT = process.env.PORT || 10000;
-
-// ✅ IMPORTANT FIX: bind to 0.0.0.0 so Render health check can reach your app
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ BOT READY on ${PORT} | ${VERSION}`);
 });
-
-/* =================================================================================================
- *  EXTRA PADDING (for 1000+ lines + notes)
- * =================================================================================================
- *  HEALTHCHECK:
- *   - Set Render Health Check Path = /ping
- *
- *  WEBHOOK:
- *   - Set Telegram webhook to: https://<your-render-domain>/webhook
- *
- *  QUICK TEST:
- *   - /start
- *   - ⬅️ Menu -> 🎁 Mời Hộp Quà -> name -> email
- *   - ⬅️ Menu -> ⚽ Thu Đá Bóng -> 100k
- *   - gõ: "da bong ₩100,000"
- *   - gõ: "moi hop qua Khanh mail@gmail.com"
- *   - gõ: "muamay 1200k hana"
- *   - gõ: "mayloi P0001 300k"
- *   - ➡️ Menu -> 📱 7) Lời/Lỗ Máy / 💼 Xem Ví
- *   - /edit last
- *   - /edit machine last
- *
- *  NOTE ABOUT RENDER SLEEP:
- *   - Free instance will sleep on inactivity. Cron reminders won't run while asleep.
- *   - Fix options:
- *     1) Upgrade Render
- *     2) Use an external ping (UptimeRobot) to hit /ping periodically
- *     3) Use Render Cron Job or a separate always-on worker
- *
- *  END.
- * =================================================================================================
- */
-
-// -------------------------------------------------------------------------------------------------
-// Padding block to comfortably exceed 1000 lines without changing runtime logic.
-// (These are comments only.)
-// -------------------------------------------------------------------------------------------------
-//
-// 💖💖💖💖💖💖💖💖💖💖
-// Bạn iu nếu muốn “cute hơn nữa”, có thể tăng cuteify() rules:
-// - thêm sticker style
-// - thêm random tail theo giờ
-// - thêm “call me senpai” mode 😝
-//
-// (Để đảm bảo ổn định, mình giữ cute nhẹ nhàng, không spam quá nhiều emoji.)
-// -------------------------------------------------------------------------------------------------
-//
-// Line padding 001
-// Line padding 002
-// Line padding 003
-// Line padding 004
-// Line padding 005
-// Line padding 006
-// Line padding 007
-// Line padding 008
-// Line padding 009
-// Line padding 010
-// Line padding 011
-// Line padding 012
-// Line padding 013
-// Line padding 014
-// Line padding 015
-// Line padding 016
-// Line padding 017
-// Line padding 018
-// Line padding 019
-// Line padding 020
-// Line padding 021
-// Line padding 022
-// Line padding 023
-// Line padding 024
-// Line padding 025
-// Line padding 026
-// Line padding 027
-// Line padding 028
-// Line padding 029
-// Line padding 030
-// Line padding 031
-// Line padding 032
-// Line padding 033
-// Line padding 034
-// Line padding 035
-// Line padding 036
-// Line padding 037
-// Line padding 038
-// Line padding 039
-// Line padding 040
-// Line padding 041
-// Line padding 042
-// Line padding 043
-// Line padding 044
-// Line padding 045
-// Line padding 046
-// Line padding 047
-// Line padding 048
-// Line padding 049
-// Line padding 050
-// -------------------------------------------------------------------------------------------------
