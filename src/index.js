@@ -52,6 +52,19 @@ function cuteifyHtml(text) {
   return s;
 }
 
+// ✅ Lấy phần "tên máy" để hiển thị (chỉ hiển thị nếu người dùng nhập ở bước note)
+function lotDetailFromNote(note, model) {
+  const s = String(note || "").trim();
+  if (!s) return "";
+  const parts = s.split("|").map((x) => x.trim()).filter(Boolean);
+  if (parts.length === 0) return "";
+  const last = parts[parts.length - 1] || "";
+  if (!last || last === "-") return "";
+  const m = String(model || "").trim();
+  if (m && last.toLowerCase() === m.toLowerCase()) return "";
+  return last;
+}
+
 /* =========================
  * Express
  * ========================= */
@@ -98,17 +111,22 @@ function kb(rows) {
 function mainKb() {
   return kb([[{ text: "⬅️ Menu" }, { text: "➡️ Menu" }]]);
 }
+
+// ✅ Back luôn nằm trên cùng
 function leftKb() {
   return kb([
+    [{ text: "⬅️ Back" }],
     [{ text: "📱 Mua Máy (Lô)" }, { text: "💸 Bán Máy" }],
     [{ text: "🧪 Kiểm Tra Máy" }],
     [{ text: "⚽ Thu Đá Bóng" }, { text: "🎁 Thu Hộp Quà" }],
     [{ text: "🔳 Thu QR" }, { text: "➕ Thu Khác" }],
-    [{ text: "⬅️ Back" }],
   ]);
 }
+
+// ✅ Back luôn nằm trên cùng
 function rightKb() {
   return kb([
+    [{ text: "⬅️ Back" }],
     [{ text: "💰 Tổng Doanh Thu" }],
     [{ text: "📅 Tháng Này" }, { text: "⏮️ Tháng Trước" }],
     [{ text: "📊 Thống Kê Game" }],
@@ -118,7 +136,6 @@ function rightKb() {
     [{ text: "📘 Hướng Dẫn" }],
     [{ text: "🧠 Smart Parse: Bật/Tắt" }],
     [{ text: "🧨 Xóa Sạch Dữ Liệu" }],
-    [{ text: "⬅️ Back" }],
   ]);
 }
 
@@ -267,7 +284,7 @@ function parseWalletShortcut(text) {
   const t = ` ${norm} `;
   if (t.includes(" hn ") || t.includes(" hana ")) return "hana";
   if (t.includes(" uri ")) return "uri";
-  if (t.includes(" kt ")) return "kt";
+  if (t.includes(" kt ")) returnreturn "kt";
   if (t.includes(" tm ") || t.includes(" tien mat ") || t.includes(" tienmat ")) return "tm";
   return "";
 }
@@ -712,12 +729,13 @@ async function sellFromLot({ chatId, lot, qty, totalPrice, wallet }) {
     chatId,
   });
 
+  // ✅ Format theo yêu cầu: "đã cộng tiền vào ví ..."
   const html =
-    `💸 <b>BÁN XONG</b> 🥳\n` +
-    `• Lô: <code>${escapeHtml(lot)}</code>\n` +
-    `• Số máy: <code>${ids.length}</code>\n` +
-    `• Tiền về ví <code>${escapeHtml(wallet.toUpperCase())}</code>: <b>${moneyWON(Math.round(totalPrice))}</b>\n` +
-    `\n<i>Chốt đơn mượt ghê 😝</i>`;
+    `😝 <b>Bán thành công!</b>\n` +
+    `Lô: <code>${escapeHtml(lot)}</code>\n` +
+    `Bán: <code>${ids.length}</code> máy\n` +
+    `Giá bán: <b>${moneyWON(Math.round(totalPrice))}</b>\n\n` +
+    `💰 Đã cộng <b>${moneyWON(Math.round(totalPrice))}</b> vào ví <code>${escapeHtml(wallet.toUpperCase())}</code>`;
 
   await send(chatId, html, { reply_markup: leftKb() });
   return true;
@@ -804,6 +822,9 @@ async function reportMachinePnL(chatId) {
   await send(chatId, html, { reply_markup: rightKb() });
 }
 
+/* =========================
+ * Kiểm tra máy: format đúng spec
+ * ========================= */
 async function listLotsPretty(chatId) {
   const lots = await readLots();
   const phones = await readPhones();
@@ -823,8 +844,10 @@ async function listLotsPretty(chatId) {
   }
 
   const sorted = [...lots].sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, 20);
+
   const lines = sorted.map((l) => {
     const ps = phones.filter((p) => p.lot === l.lot);
+
     const ok = ps.filter((p) => p.status === "ok").length;
     const tach = ps.filter((p) => p.status === "tach").length;
     const neu = ps.filter((p) => p.status === "new").length;
@@ -833,26 +856,24 @@ async function listLotsPretty(chatId) {
     const hq = ps.filter((p) => p.game === "hq").length;
     const qr = ps.filter((p) => p.game === "qr").length;
     const db = ps.filter((p) => p.game === "db").length;
-    const r = revByLot.get(l.lot) || 0;
 
-    let st = "⏳ Chưa chốt";
-    if (tach + sold === l.qty) st = "😵 Tạch/Sold hết";
-    else if (ok + sold === l.qty && neu === 0 && tach === 0) st = "✅ OK/Sold hết";
-    else if (ok > 0 || tach > 0 || sold > 0) st = "🧩 Có biến động";
+    const revenue = revByLot.get(l.lot) || 0;
+
+    // ✅ Trạng thái theo spec: chưa chốt nếu Ok=0 và Tạch=0
+    const statusText = ok === 0 && tach === 0 ? "⏳ Chưa chốt" : "✅ Đã chốt";
+
+    // ✅ Hiển thị tên máy nếu người dùng có nhập (ở bước note)
+    const detail = lotDetailFromNote(l.note, l.model);
+    const detailPart = detail ? ` ${escapeHtml(detail)}` : "";
 
     return (
-      `• <b>${escapeHtml(l.lot)}</b>: Mua <code>${l.qty}</code> máy <b>${escapeHtml(l.model)}</b> | Tổng <b>${moneyWON(l.total)}</b> | Ví <code>${escapeHtml(String(l.wallet || "").toUpperCase())}</code>\n` +
-      `  Trạng thái: <i>${escapeHtml(st)}</i> (new:<code>${neu}</code> ok:<code>${ok}</code> tạch:<code>${tach}</code> sold:<code>${sold}</code>)\n` +
-      `  Game: HQ:<code>${hq}</code> QR:<code>${qr}</code> DB:<code>${db}</code> | Doanh thu: <b>${moneyWON(r)}</b>`
+      `• <b>${escapeHtml(l.lot)}</b>: Mua <code>${l.qty}</code> máy <b>${escapeHtml(l.model)}</b>${detailPart} | Tổng <b>${moneyWON(l.total)}</b> | Ví <code>${escapeHtml(String(l.wallet || "").toUpperCase())}</code>\n\n` +
+      `  Trạng thái: ${escapeHtml(statusText)} (New:<code>${neu}</code> / Ok:<code>${ok}</code> / Tạch:<code>${tach}</code> / Sold:<code>${sold}</code>)\n\n` +
+      `  Game: HQ:<code>${hq}</code> / QR:<code>${qr}</code> / DB:<code>${db}</code> | Doanh thu: <b>${moneyWON(revenue)}</b>`
     );
   });
 
-  const html =
-    `🧪 <b>DANH SÁCH LÔ MÁY</b> (20 lô gần nhất)\n\n` +
-    `${lines.join("\n\n")}\n\n` +
-    `<i>Chốt lô:</i> <code>ma 01 loi 1 qr tach 1</code>\n` +
-    `<i>Bán:</i> <code>ban 2 ss 80k ma01 tm</code>`;
-
+  const html = `🧪 <b>DANH SÁCH LÔ MÁY</b> (20 lô gần nhất)\n\n${lines.join("\n\n")}`;
   await send(chatId, html, { reply_markup: leftKb() });
 }
 
@@ -955,7 +976,7 @@ async function handleSessionInput(chatId, userName, text) {
       setSession(chatId, sess);
       await send(
         chatId,
-        `Okie 😚 <b>Mua lô</b> <code>${parsed.qty}</code> máy <b>${escapeHtml(parsed.model)}</b>, tổng <b>${moneyWON(parsed.totalPrice)}</b>\nVí: <code>${escapeHtml(parsed.wallet.toUpperCase())}</code>\n\nNhập <i>ghi chú</i> (hoặc <code>-</code> để bỏ qua) nha~`,
+        `Okie 😚 Mua lô <code>${parsed.qty}</code> máy ${escapeHtml(parsed.model)}, tổng ${moneyWON(parsed.totalPrice)}.\nVí: ${escapeHtml(parsed.wallet.toUpperCase())}\nBạn nhập ghi chú thêm (hoặc '-' để bỏ qua) nha~ ^^`,
         { reply_markup: leftKb() }
       );
       return true;
@@ -965,7 +986,7 @@ async function handleSessionInput(chatId, userName, text) {
     setSession(chatId, sess);
     await send(
       chatId,
-      `Okie 😚 <b>Mua lô</b> <code>${parsed.qty}</code> máy <b>${escapeHtml(parsed.model)}</b>, tổng <b>${moneyWON(parsed.totalPrice)}</b>\n\nTính tiền <b>ví nào</b>? (<code>hana/uri/kt/tm</code>)`,
+      `Okie 😚 Mua lô <code>${parsed.qty}</code> máy ${escapeHtml(parsed.model)}, tổng ${moneyWON(parsed.totalPrice)}.\nTính tiền ví nào? (<code>hana/uri/kt/tm</code>)`,
       { reply_markup: leftKb() }
     );
     return true;
@@ -981,7 +1002,7 @@ async function handleSessionInput(chatId, userName, text) {
     sess.data.wallet = w;
     sess.step = "note";
     setSession(chatId, sess);
-    await send(chatId, `Nhập <i>ghi chú</i> (hoặc <code>-</code> để bỏ qua) nha~`, { reply_markup: leftKb() });
+    await send(chatId, `Bạn nhập ghi chú thêm (hoặc '-' để bỏ qua) nha~ ^^`, { reply_markup: leftKb() });
     return true;
   }
 
@@ -1000,14 +1021,16 @@ async function handleSessionInput(chatId, userName, text) {
 
     clearSession(chatId);
 
+    // ✅ Reply đúng format yêu cầu, chỉ in tên máy nếu user có nhập (extra)
+    const detailLine = extra ? `${escapeHtml(extra)}\n` : "";
+
     const html =
-      `✅ <b>Xong rồi nè</b> 🥳\n` +
+      `✅ Xong rồi nè 🥳\n` +
       `Tạo lô: <code>${escapeHtml(r.lot)}</code>\n` +
       `Mua: <code>${sess.data.qty}</code> máy <b>${escapeHtml(sess.data.model)}</b>\n` +
+      (detailLine ? detailLine : "") +
       `Tổng: <b>${moneyWON(Math.round(sess.data.totalPrice))}</b>\n` +
-      `Ví: <code>${escapeHtml(String(sess.data.wallet || "").toUpperCase())}</code>\n\n` +
-      `<i>Chốt lô:</i> <code>ma ${r.lot.slice(2)} loi 1 qr tach 1</code>\n` +
-      `<i>Bán:</i> <code>ban ${sess.data.qty} ss 80k ma${r.lot.slice(2)} tm</code>`;
+      `Ví: <code>${escapeHtml(String(sess.data.wallet || "").toUpperCase())}</code>`;
 
     await send(chatId, html, { reply_markup: leftKb() });
     return true;
@@ -1032,7 +1055,7 @@ async function handleSessionInput(chatId, userName, text) {
     setSession(chatId, sess);
     await send(
       chatId,
-      `Bạn đang <b>bán</b> lô <code>${escapeHtml(parsed.lot)}</code> x<code>${parsed.qty}</code>, tiền <b>${moneyWON(parsed.totalPrice)}</b>\n\nTiền về <b>ví nào</b>? (<code>hana/uri/kt/tm</code>)`,
+      `Bạn đang bán lô <code>${escapeHtml(parsed.lot)}</code> x<code>${parsed.qty}</code>, tiền ${moneyWON(parsed.totalPrice)}.\nTiền về ví nào? (<code>hana/uri/kt/tm</code>)`,
       { reply_markup: leftKb() }
     );
     return true;
@@ -1062,7 +1085,7 @@ async function handleSessionInput(chatId, userName, text) {
     sess.data = { wallet: w };
     sess.step = "amount";
     setSession(chatId, sess);
-    await send(chatId, `Okie. Bạn nhập <b>số dư mới</b> cho ví <code>${escapeHtml(w.toUpperCase())}</code> (vd <code>120k</code>) nha~`, { reply_markup: rightKb() });
+    await send(chatId, `Okie. Bạn nhập số dư mới cho ví <code>${escapeHtml(w.toUpperCase())}</code> (vd <code>120k</code>) nha~`, { reply_markup: rightKb() });
     return true;
   }
 
@@ -1128,7 +1151,7 @@ async function handleTextMessage(msg) {
   }
   if (text === "⬅️ Back") {
     clearSession(chatId);
-    await send(chatId, `Về <b>menu chính</b> nha bạn iu~ 🏠`, { reply_markup: mainKb() });
+    await send(chatId, `Về menu chính nha bạn iu~ 🏠`, { reply_markup: mainKb() });
     return;
   }
 
@@ -1192,7 +1215,7 @@ async function handleTextMessage(msg) {
     setSession(chatId, { flow: "sell", step: "wallet", data: sell });
     await send(
       chatId,
-      `Mình hiểu bạn đang <b>bán</b> lô <code>${escapeHtml(sell.lot)}</code> x<code>${sell.qty}</code> giá <b>${moneyWON(sell.totalPrice)}</b>\n\nTiền về ví nào? (<code>hana/uri/kt/tm</code>)`,
+      `Mình hiểu bạn đang bán lô <code>${escapeHtml(sell.lot)}</code> x<code>${sell.qty}</code> giá ${moneyWON(sell.totalPrice)}.\nTiền về ví nào? (<code>hana/uri/kt/tm</code>)`,
       { reply_markup: leftKb() }
     );
     return;
@@ -1217,13 +1240,15 @@ async function handleTextMessage(msg) {
     if (buy && !buy.incomplete) {
       if (buy.wallet) {
         setSession(chatId, { flow: "buy_lot", step: "note", data: buy });
-        await send(chatId, `Okie 😚 <b>Mua lô</b> <code>${buy.qty}</code> máy <b>${escapeHtml(buy.model)}</b>, tổng <b>${moneyWON(buy.totalPrice)}</b>\nVí: <code>${escapeHtml(buy.wallet.toUpperCase())}</code>\nNhập note (hoặc <code>-</code>) nha~`, {
-          reply_markup: leftKb(),
-        });
+        await send(
+          chatId,
+          `Okie 😚 Mua lô <code>${buy.qty}</code> máy ${escapeHtml(buy.model)}, tổng ${moneyWON(buy.totalPrice)}.\nVí: ${escapeHtml(buy.wallet.toUpperCase())}\nBạn nhập ghi chú thêm (hoặc '-') nha~ ^^`,
+          { reply_markup: leftKb() }
+        );
         return;
       }
       setSession(chatId, { flow: "buy_lot", step: "wallet", data: buy });
-      await send(chatId, `Mình hiểu bạn mua lô <code>${buy.qty}</code> máy <b>${escapeHtml(buy.model)}</b>, tổng <b>${moneyWON(buy.totalPrice)}</b>\nTính tiền ví nào? (<code>hana/uri/kt/tm</code>)`, {
+      await send(chatId, `Mình hiểu bạn mua lô <code>${buy.qty}</code> máy ${escapeHtml(buy.model)}, tổng ${moneyWON(buy.totalPrice)}.\nTính tiền ví nào? (<code>hana/uri/kt/tm</code>)`, {
         reply_markup: leftKb(),
       });
       return;
