@@ -1,562 +1,540 @@
-// src/index.js
 /**
- * ============================================================
- * TIKTOK_LITE_BOT – Webhook + Google Sheets (googleapis v4)
+ * TikTok Lite Bot — Google Apps Script (Webhook)
+ * - Telegram webhook (doPost)
+ * - Google Sheet DB (SpreadsheetApp)
  *
- * ENV REQUIRED:
- * - BOT_TOKEN
- * - GOOGLE_SHEET_ID
- * - GOOGLE_APPLICATION_CREDENTIALS (default: /etc/secrets/google-service-account.json)
- * - ADMIN_TELEGRAM_ID
- * ============================================================
+ * Script Properties required:
+ *   BOT_TOKEN
+ *   GOOGLE_SHEET_ID
+ * Optional:
+ *   ADMIN_TELEGRAM_ID
+ *   TZ (default Asia/Seoul)
+ *
+ * Tabs required in Google Sheet:
+ *   INVITES, GAME_REVENUE, CHECKIN_REWARD
+ * Optional:
+ *   UNDO_LOG
  */
 
-import express from "express";
-import fetch from "node-fetch";
-import cron from "node-cron";
-import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc.js";
-import { google } from "googleapis";
+const PROP = PropertiesService.getScriptProperties();
 
-dayjs.extend(utc);
-
-const VERSION = "v2.0-inline-menu+reset";
-
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
-const GOOGLE_APPLICATION_CREDENTIALS =
-  process.env.GOOGLE_APPLICATION_CREDENTIALS || "/etc/secrets/google-service-account.json";
-const ADMIN_TELEGRAM_ID = String(process.env.ADMIN_TELEGRAM_ID || "").trim();
-
-if (!BOT_TOKEN) throw new Error("Missing BOT_TOKEN");
-if (!GOOGLE_SHEET_ID) throw new Error("Missing GOOGLE_SHEET_ID");
-if (!ADMIN_TELEGRAM_ID) throw new Error("Missing ADMIN_TELEGRAM_ID");
-
-/* ================== GOOGLE SHEETS ================== */
-const auth = new google.auth.GoogleAuth({
-  keyFile: GOOGLE_APPLICATION_CREDENTIALS,
-  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
-});
-const sheets = google.sheets({ version: "v4", auth });
-
-async function getValues(rangeA1) {
-  const r = await sheets.spreadsheets.values.get({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: rangeA1,
-  });
-  return r.data.values || [];
+function cfg(key, defVal = "") {
+  const v = PROP.getProperty(key);
+  return (v === null || v === undefined || v === "") ? defVal : v;
 }
 
-async function appendValues(rangeA1, rows) {
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: rangeA1,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: rows },
-  });
+function getTZ() {
+  return cfg("TZ", "Asia/Seoul");
 }
 
-async function updateValues(rangeA1, rows) {
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: rangeA1,
-    valueInputOption: "USER_ENTERED",
-    requestBody: { values: rows },
-  });
+function nowISO() {
+  const tz = getTZ();
+  return Utilities.formatDate(new Date(), tz, "yyyy-MM-dd'T'HH:mm:ssXXX");
 }
 
-async function clearValues(rangeA1) {
-  await sheets.spreadsheets.values.clear({
-    spreadsheetId: GOOGLE_SHEET_ID,
-    range: rangeA1,
-  });
+function nowDateKey() {
+  const tz = getTZ();
+  return Utilities.formatDate(new Date(), tz, "yyyy-MM-dd");
 }
 
-/* ================== TELEGRAM ================== */
-async function tg(method, payload) {
-  const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}`;
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  return resp.json().catch(() => ({}));
+function addDaysISO(isoString, days) {
+  const d = isoString ? new Date(isoString) : new Date();
+  d.setDate(d.getDate() + days);
+  const tz = getTZ();
+  return Utilities.formatDate(d, tz, "yyyy-MM-dd'T'HH:mm:ssXXX");
 }
 
-async function send(chatId, text, extra = {}) {
-  if (!chatId) return;
-  await tg("sendMessage", { chat_id: chatId, text, ...extra });
+function fmtMoney(n) {
+  const x = Number(n || 0);
+  return x.toLocaleString("en-US");
 }
 
-async function edit(chatId, messageId, text, extra = {}) {
-  if (!chatId || !messageId) return;
-  await tg("editMessageText", { chat_id: chatId, message_id: messageId, text, ...extra });
-}
-
-function ik(rows) {
-  return { inline_keyboard: rows };
-}
-
-/* ================== INLINE MENUS (LEFT/RIGHT) ================== */
-function buildHomeMenu() {
-  return ik([
-    [
-      { text: "⬅️ MENU TRÁI", callback_data: "menu:left" },
-      { text: "➡️ MENU PHẢI", callback_data: "menu:right" },
-    ],
-    [{ text: "🆘 Help", callback_data: "menu:help" }],
-  ]);
-}
-
-function buildLeftMenu() {
-  return ik([
-    [
-      { text: "💰 Dabong", callback_data: "quick:db" },
-      { text: "🎁 Hopqua", callback_data: "quick:hq" },
-    ],
-    [
-      { text: "🔳 QR", callback_data: "quick:qr" },
-      { text: "➕ Thêm thu", callback_data: "quick:them" },
-    ],
-    [{ text: "⬅️ Back", callback_data: "menu:home" }],
-  ]);
-}
-
-function buildRightMenu() {
-  return ik([
-    [{ text: "📊 Báo cáo tháng", callback_data: "action:report_month" }],
-    [{ text: "📌 Pending 14 ngày", callback_data: "action:pending" }],
-    [{ text: "📱 Thống kê máy", callback_data: "action:phone_stats" }],
-    [{ text: "♻️ RESET (xóa dữ liệu)", callback_data: "action:reset" }],
-    [{ text: "⬅️ Back", callback_data: "menu:home" }],
-  ]);
-}
-
-function buildResetConfirmMenu() {
-  return ik([
-    [{ text: "✅ XÓA HẾT & CHẠY LẠI", callback_data: "reset:confirm" }],
-    [{ text: "❌ HỦY", callback_data: "reset:cancel" }],
-  ]);
-}
-
-/* ================== UTIL ================== */
-function nowIso() {
-  return new Date().toISOString();
-}
-
+// Supports: 100k => 100000, 0.5k => 500, 120000 => 120000, 12,000 => 12000
 function parseMoney(input) {
-  // supports: 100k, 0.5k, 57k, 200k, 120000, 200,000
   if (!input) return null;
   const s = String(input).trim().toLowerCase().replace(/,/g, "");
-  const m = s.match(/^(\d+(?:\.\d+)?)(k)?$/);
-  if (m) {
-    const num = Number(m[1]);
-    const isK = !!m[2];
-    return Math.round(isK ? num * 1000 : num);
-  }
-  if (/^\d+$/.test(s)) return Number(s);
-  return null;
+  const m = s.match(/^(\d+(\.\d+)?)(k)?$/);
+  if (!m) return null;
+  const num = Number(m[1]);
+  if (Number.isNaN(num)) return null;
+  return m[3] ? Math.round(num * 1000) : Math.round(num);
 }
 
-function isEmail(x) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(x || "").trim());
+function ss() {
+  const id = cfg("GOOGLE_SHEET_ID");
+  if (!id) throw new Error("Missing Script Property: GOOGLE_SHEET_ID");
+  return SpreadsheetApp.openById(id);
 }
 
-function shortGameCode(token) {
-  const t = String(token || "").toLowerCase();
-  if (t === "dabong" || t === "db") return "db";
-  if (t === "hopqua" || t === "hq" || t === "hh") return "hq";
-  if (t === "qr") return "qr";
-  return "";
+function sheetByName(name) {
+  const sh = ss().getSheetByName(name);
+  if (!sh) throw new Error(`Missing tab: ${name}`);
+  return sh;
 }
 
-function formatVND(n) {
-  const x = Number(n || 0);
-  return x.toLocaleString("vi-VN") + "đ";
+function getHeaderMap(sh) {
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  const map = {};
+  headers.forEach((h, i) => {
+    if (h) map[String(h).trim()] = i + 1; // 1-based col
+  });
+  return map;
 }
 
-function isAdmin(chatId) {
-  return String(chatId) === ADMIN_TELEGRAM_ID;
+function appendRowObj(tabName, obj) {
+  const sh = sheetByName(tabName);
+  const map = getHeaderMap(sh);
+  const lastCol = sh.getLastColumn();
+  const row = new Array(lastCol).fill("");
+  Object.keys(obj).forEach(k => {
+    const col = map[k];
+    if (col) row[col - 1] = obj[k];
+  });
+  sh.appendRow(row);
 }
 
-/* ================== HELP ================== */
-function helpText() {
-  return (
-    "📌 CÚ PHÁP NHANH:\n" +
-    "- dabong 100k\n" +
-    "- hopqua 200k\n" +
-    "- qr 57k\n" +
-    "- them 0.5k\n\n" +
-    "📌 INVITE 14 NGÀY:\n" +
-    "- hopqua Ten email@gmail.com\n" +
-    "- qr Ten email@gmail.com\n\n" +
-    "📌 ADMIN trả lời khi bot hỏi checkin:\n" +
-    "- 60k\n\n" +
-    "📌 LỆNH:\n" +
-    "- /start\n" +
-    "- /help\n" +
-    "- /pending\n" +
-    "- /report\n" +
-    "- /reset (ADMIN)\n"
-  );
-}
-
-/* ================== INVITES (14 days) ================== */
-function calcInviteDates(invitedAtIso = null) {
-  const invitedAt = invitedAtIso ? dayjs(invitedAtIso) : dayjs();
-  const due = invitedAt.add(14, "day");
-  return { invitedAt, due };
-}
-
-async function listInvites() {
-  const rows = await getValues("INVITES!A2:L");
-  return rows.map((r, i) => ({
-    rowNumber: i + 2,
-    ts_created: r[0] || "",
-    game: r[1] || "",
-    name: r[2] || "",
-    email: r[3] || "",
-    invited_at: r[4] || "",
-    due_date: r[5] || "",
-    status: r[6] || "",
-    asked: String(r[7] || "0"),
-    asked_at: r[8] || "",
-    checkin_reward: r[9] || "",
-    done_at: r[10] || "",
-    note: r[11] || "",
-  }));
-}
-
-async function addInvite({ game, name, email }) {
-  const { invitedAt, due } = calcInviteDates();
-  const row = [
-    nowIso(), // A ts_created
-    game, // B
-    name, // C
-    email, // D
-    invitedAt.toISOString(), // E invited_at
-    due.toISOString(), // F due_date
-    "pending", // G status
-    0, // H asked
-    "", // I asked_at
-    "", // J checkin_reward
-    "", // K done_at
-    "", // L note
-  ];
-  await appendValues("INVITES!A:L", [row]);
-  return { invitedAt, due };
-}
-
-async function markAsked(rowNumber) {
-  await updateValues(`INVITES!H${rowNumber}:I${rowNumber}`, [[1, nowIso()]]);
-}
-
-async function markDone(rowNumber, rewardAmount) {
-  await updateValues(`INVITES!G${rowNumber}:K${rowNumber}`, [["done", 1, nowIso(), rewardAmount, nowIso()]]);
-}
-
-/* ================== GAME REVENUE ================== */
-async function addGameRevenue({ game, amount, note = "" }) {
-  const row = [nowIso(), game, amount, note];
-  await appendValues("GAME_REVENUE!A:D", [row]);
-}
-
-async function addCheckinRevenue({ game, amount, name, email }) {
-  // CHECKIN_REWARD
-  await appendValues("CHECKIN_REWARD!A:F", [[nowIso(), game, name, email, amount, "auto_due"]]);
-  // GAME_REVENUE (as "checkin")
-  await addGameRevenue({ game: `${game}_checkin`, amount, note: `${name} ${email}` });
-}
-
-/* ================== REPORTS ================== */
-async function handleReportMonth(chatId) {
-  const rows = await getValues("GAME_REVENUE!A2:D");
-  const month = dayjs().format("YYYY-MM");
-  let total = 0;
-
-  for (const r of rows) {
-    const ts = r[0];
-    const amt = Number(r[2] || 0);
-    if (!ts) continue;
-    if (dayjs(ts).format("YYYY-MM") === month) total += amt;
-  }
-
-  await send(chatId, `📊 Báo cáo tháng ${month}\nTổng thu: ${formatVND(total)}`, {
-    reply_markup: buildHomeMenu(),
+function getAllRowsObj(tabName) {
+  const sh = sheetByName(tabName);
+  const lastRow = sh.getLastRow();
+  const lastCol = sh.getLastColumn();
+  if (lastRow < 2) return [];
+  const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String);
+  const values = sh.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  return values.map((r, idx) => {
+    const o = {};
+    headers.forEach((h, i) => o[h] = r[i]);
+    o.__row = idx + 2; // actual sheet row
+    return o;
   });
 }
 
-async function handlePending(chatId) {
-  const invites = await listInvites();
-  const pending = invites
-    .filter((x) => x.status === "pending")
-    .sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)));
+function updateRowObj(tabName, rowNumber, patchObj) {
+  const sh = sheetByName(tabName);
+  const map = getHeaderMap(sh);
+  Object.keys(patchObj).forEach(k => {
+    const col = map[k];
+    if (col) sh.getRange(rowNumber, col).setValue(patchObj[k]);
+  });
+}
 
-  if (!pending.length) {
-    await send(chatId, "✅ Không có invite pending.", { reply_markup: buildHomeMenu() });
+function logUndo(action, payload) {
+  let hasUndo = true;
+  try { sheetByName("UNDO_LOG"); } catch (e) { hasUndo = false; }
+  if (!hasUndo) return;
+  appendRowObj("UNDO_LOG", {
+    timestamp: nowISO(),
+    action,
+    payload: JSON.stringify(payload || {})
+  });
+}
+
+// ===== Telegram helpers =====
+function botToken() {
+  const t = cfg("BOT_TOKEN");
+  if (!t) throw new Error("Missing Script Property: BOT_TOKEN");
+  return t;
+}
+
+function tgUrl(method) {
+  return `https://api.telegram.org/bot${botToken()}/${method}`;
+}
+
+function tgSendMessage(chatId, text) {
+  const payload = {
+    chat_id: chatId,
+    text: text
+  };
+  UrlFetchApp.fetch(tgUrl("sendMessage"), {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  });
+}
+
+function isAdmin(fromId) {
+  const admin = cfg("ADMIN_TELEGRAM_ID", "");
+  return admin && String(fromId) === String(admin);
+}
+
+// ===== Sessions (for due check Q&A) =====
+function sessKey(chatId) { return `SESS_${chatId}`; }
+
+function setSession(chatId, sessObj) {
+  PROP.setProperty(sessKey(chatId), JSON.stringify(sessObj));
+}
+
+function getSession(chatId) {
+  const raw = PROP.getProperty(sessKey(chatId));
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch (e) { return null; }
+}
+
+function clearSession(chatId) {
+  PROP.deleteProperty(sessKey(chatId));
+}
+
+// ===== Business logic =====
+function addGameRevenue(chatId, game, amount, type, note = "", meta = {}) {
+  appendRowObj("GAME_REVENUE", {
+    timestamp: nowISO(),
+    game,
+    type,
+    amount,
+    note,
+    chatId,
+    name: meta.name || "",
+    email: meta.email || ""
+  });
+  logUndo("ADD_GAME_REVENUE", { chatId, game, amount, type, note, meta });
+}
+
+function createInvite(chatId, game, name, email) {
+  const invitedAt = nowISO();
+  const due = addDaysISO(invitedAt, 14);
+
+  appendRowObj("INVITES", {
+    timestamp: invitedAt,
+    game,
+    name,
+    email,
+    time_invited: invitedAt,
+    due_date: due,
+    status: "pending",
+    chatId,
+    last_reminded_at: "",
+    checkin_reward: "",
+    completed_at: ""
+  });
+
+  logUndo("ADD_INVITE", { chatId, game, name, email, time_invited: invitedAt, due_date: due });
+  return { due };
+}
+
+function findLatestPendingInvite(game, name, email) {
+  const rows = getAllRowsObj("INVITES");
+  const g = String(game || "").toLowerCase();
+
+  const pending = rows.filter(r => {
+    const st = String(r.status || "").toLowerCase();
+    const rg = String(r.game || "").toLowerCase();
+    if (st !== "pending") return false;
+    if (rg !== g) return false;
+
+    const rn = String(r.name || "").toLowerCase();
+    const re = String(r.email || "").toLowerCase();
+    const nameOk = name && rn === String(name).toLowerCase();
+    const emailOk = email && re === String(email).toLowerCase();
+    return email ? emailOk : nameOk;
+  });
+
+  pending.sort((a, b) => new Date(b.time_invited || b.timestamp) - new Date(a.time_invited || a.timestamp));
+  return pending[0] || null;
+}
+
+function markInviteDoneAndAddCheckin(chatId, game, name, email, reward) {
+  const target = findLatestPendingInvite(game, name, email);
+  if (!target) throw new Error(`Không tìm thấy invite pending cho ${game} ${name || ""}`);
+
+  appendRowObj("CHECKIN_REWARD", {
+    timestamp: nowISO(),
+    game,
+    name: target.name,
+    email: target.email,
+    reward,
+    due_date: target.due_date,
+    chatId
+  });
+
+  addGameRevenue(
+    chatId,
+    String(game).toLowerCase(),
+    reward,
+    "checkin_reward",
+    `checkin 14 ngày: ${target.name}`,
+    { name: target.name, email: target.email }
+  );
+
+  updateRowObj("INVITES", target.__row, {
+    status: "done",
+    checkin_reward: reward,
+    completed_at: nowISO()
+  });
+
+  logUndo("DONE_INVITE_CHECKIN", { inviteRowNumber: target.__row, chatId, game, reward });
+}
+
+function reportMonth(chatId, ym) {
+  const rows = getAllRowsObj("GAME_REVENUE");
+  const month = ym || nowDateKey().slice(0, 7); // YYYY-MM
+
+  const monthRows = rows.filter(r => String(r.timestamp || "").startsWith(month));
+  const byGame = {};
+  monthRows.forEach(r => {
+    const g = String(r.game || "unknown");
+    byGame[g] = (byGame[g] || 0) + (Number(r.amount) || 0);
+  });
+
+  const total = Object.keys(byGame).reduce((a, k) => a + byGame[k], 0);
+  let text = `📊 Báo cáo tháng ${month}\n`;
+  text += `• Tổng thu TikTok: ${fmtMoney(total)}\n`;
+  Object.keys(byGame).forEach(g => {
+    text += `  - ${g}: ${fmtMoney(byGame[g])}\n`;
+  });
+
+  tgSendMessage(chatId, text);
+}
+
+function listPending(chatId) {
+  const rows = getAllRowsObj("INVITES");
+  const now = new Date();
+
+  const pending = rows
+    .filter(r => String(r.status || "").toLowerCase() === "pending")
+    .map(r => {
+      const due = new Date(r.due_date);
+      const overdue = !isNaN(due.getTime()) && due.getTime() <= now.getTime();
+      return { r, due, overdue };
+    })
+    .sort((a, b) => (a.due.getTime() || 0) - (b.due.getTime() || 0));
+
+  if (pending.length === 0) {
+    tgSendMessage(chatId, "✅ Không có invite pending.");
     return;
   }
 
-  const lines = pending.slice(0, 30).map((x) => {
-    const due = x.due_date ? dayjs(x.due_date).format("DD/MM") : "??";
-    return `- ${x.game.toUpperCase()} | ${x.name} | ${x.email} | due ${due} | asked=${x.asked}`;
+  const tz = getTZ();
+  let text = `🕒 Pending invites (${pending.length})\n`;
+  pending.slice(0, 50).forEach(({ r, due, overdue }) => {
+    const dueStr = isNaN(due.getTime())
+      ? "invalid"
+      : Utilities.formatDate(due, tz, "EEE dd/MM");
+    text += `• ${overdue ? "⚠️" : "⏳"} ${r.game} - ${r.name} (${r.email}) due: ${dueStr}\n`;
   });
 
-  await send(chatId, `📌 Pending 14 ngày (${pending.length})\n` + lines.join("\n"), {
-    reply_markup: buildHomeMenu(),
-  });
+  tgSendMessage(chatId, text);
 }
 
-async function handlePhoneStats(chatId) {
-  await send(chatId, "📱 Phần MÁY/LÔ chưa triển khai (đúng roadmap). Khi bạn cần mình sẽ làm tiếp.", {
-    reply_markup: buildHomeMenu(),
-  });
-}
-
-/* ================== DUE CHECK (CRON) ================== */
-async function checkDueInvitesAndPingAdmin() {
-  const invites = await listInvites();
-  const now = dayjs();
-
-  // due: pending, not asked, due_date <= now
-  const dueList = invites.filter((x) => {
-    if (x.status !== "pending") return false;
-    if (String(x.asked || "0") === "1") return false;
-    if (!x.due_date) return false;
-    return dayjs(x.due_date).isBefore(now) || dayjs(x.due_date).isSame(now);
-  });
-
-  for (const x of dueList) {
-    // mark asked
-    await markAsked(x.rowNumber);
-
-    const gameName = x.game === "hq" ? "Hopqua" : x.game === "qr" ? "QR" : x.game;
-    await send(ADMIN_TELEGRAM_ID, `⏰ ĐẾN HẠN CHECKIN!\n${gameName} ${x.name}\nTrả lời số tiền (vd: 60k)`, {
-      reply_markup: buildHomeMenu(),
-    });
-  }
-}
-
-// every 10 minutes
-cron.schedule("*/10 * * * *", async () => {
+// ===== Due check (trigger) =====
+function runDueCheck() {
+  let rows;
   try {
-    await checkDueInvitesAndPingAdmin();
+    rows = getAllRowsObj("INVITES");
   } catch (e) {
-    console.error("CRON ERROR:", e?.message || e);
+    console.log("Missing INVITES:", e.message);
+    return;
   }
-});
 
-/* ================== RESET (ADMIN ONLY) ================== */
-const RESET_CLEAR_RANGES = [
-  "SETTINGS!A2:Z",
-  "WALLETS!A2:Z",
-  "WALLET_LOG!A2:Z",
-  "PHONES!A2:Z",
-  "LOTS!A2:Z",
-  "LOT_RESULT!A2:Z",
-  "PHONE_PROFIT_LOG!A2:Z",
-  "INVITES!A2:Z",
-  "CHECKIN_REWARD!A2:Z",
-  "GAME_REVENUE!A2:Z",
-  "UNDO_LOG!A2:Z",
-];
+  const tz = getTZ();
+  const now = new Date();
+  const todayKey = nowDateKey();
 
-async function resetAllData() {
-  for (const r of RESET_CLEAR_RANGES) {
-    try {
-      await clearValues(r);
-    } catch (e) {
-      console.error("RESET clear error:", r, e?.message || e);
+  rows.forEach(r => {
+    if (String(r.status || "").toLowerCase() !== "pending") return;
+
+    const due = new Date(r.due_date);
+    if (isNaN(due.getTime())) return;
+
+    if (due.getTime() <= now.getTime()) {
+      // reminded today?
+      const last = r.last_reminded_at ? new Date(r.last_reminded_at) : null;
+      const remindedToday = last && !isNaN(last.getTime())
+        ? Utilities.formatDate(last, tz, "yyyy-MM-dd") === todayKey
+        : false;
+      if (remindedToday) return;
+
+      // Ask reward in chat
+      const chatId = r.chatId;
+      const game = String(r.game || "").toLowerCase();
+      const gameLabel = (game === "hq") ? "Hopqua" : (game === "qr") ? "QR" : game;
+
+      setSession(chatId, {
+        pending: {
+          type: "ask_checkin_reward",
+          data: { game, name: r.name, email: r.email }
+        }
+      });
+
+      tgSendMessage(chatId, `${gameLabel} ${r.name} = bao nhiêu? (vd: 60k)`);
+
+      updateRowObj("INVITES", r.__row, { last_reminded_at: nowISO() });
     }
-  }
-}
-
-/* ================== MESSAGE HANDLERS ================== */
-async function handleStart(chatId) {
-  await send(chatId, `✅ TIKTOK_LITE_BOT READY (${VERSION})\nBấm menu để mở chức năng.`, {
-    reply_markup: buildHomeMenu(),
   });
 }
 
-async function handleTextMessage(msg) {
-  const chatId = msg.chat?.id;
-  const text = String(msg.text || "").trim();
-  if (!chatId || !text) return;
-
-  const lower = text.toLowerCase();
-
-  // commands
-  if (lower === "/start" || lower === "start") return handleStart(chatId);
-  if (lower === "/help" || lower === "help" || lower.includes("🆘")) {
-    return send(chatId, helpText(), { reply_markup: buildHomeMenu() });
-  }
-  if (lower === "/pending") return handlePending(chatId);
-  if (lower === "/report") return handleReportMonth(chatId);
-
-  // reset command (admin)
-  if (lower === "/reset" || lower === "reset" || lower === "resert") {
-    if (!isAdmin(chatId)) return send(chatId, "❌ Bạn không có quyền dùng RESET.", { reply_markup: buildHomeMenu() });
-    return send(
-      chatId,
-      "⚠️ RESET sẽ XÓA TOÀN BỘ DỮ LIỆU (trừ dòng tiêu đề) trên các sheet.\nBạn chắc chắn chứ?",
-      { reply_markup: buildResetConfirmMenu() }
-    );
-  }
-
-  // admin replies to due ping: amount only (e.g. 60k)
-  if (isAdmin(chatId)) {
-    const amtOnly = parseMoney(lower);
-    if (amtOnly != null) {
-      // find latest asked pending invite (asked=1, status=pending, checkin_reward empty) sort asked_at desc
-      const invites = await listInvites();
-      const cand = invites
-        .filter((x) => x.status === "pending" && String(x.asked || "0") === "1" && !x.checkin_reward)
-        .sort((a, b) => String(b.asked_at).localeCompare(String(a.asked_at)))[0];
-
-      if (cand) {
-        await addCheckinRevenue({ game: cand.game, amount: amtOnly, name: cand.name, email: cand.email });
-        await markDone(cand.rowNumber, amtOnly);
-        await send(chatId, `✅ Đã ghi check-in: ${cand.game.toUpperCase()} ${cand.name} = ${formatVND(amtOnly)}`, {
-          reply_markup: buildHomeMenu(),
-        });
-        return;
-      }
-    }
-  }
-
-  // quick menu text fallback (old keyboard texts)
-  if (lower.startsWith("📊")) return handleReportMonth(chatId);
-  if (lower.startsWith("📌")) return handlePending(chatId);
-  if (lower.startsWith("📱")) return handlePhoneStats(chatId);
-
-  // parse normal commands: dabong/hopqua/qr/them
-  const parts = text.split(/\s+/).filter(Boolean);
-  const cmd = parts[0];
-  const game = shortGameCode(cmd);
-
-  // "them 0.5k" => add revenue with game = "them"
-  if (cmd.toLowerCase() === "them") {
-    const amt = parseMoney(parts[1]);
-    if (amt == null) return send(chatId, "❌ Sai cú pháp. Ví dụ: them 0.5k", { reply_markup: buildHomeMenu() });
-    await addGameRevenue({ game: "them", amount: amt });
-    return send(chatId, `✅ Đã ghi THÊM: ${formatVND(amt)}`, { reply_markup: buildHomeMenu() });
-  }
-
-  // game commands: dabong / hopqua / qr
-  if (game) {
-    // Case invite: hopqua Khanh mail@gmail.com
-    if (parts.length >= 3) {
-      const maybeAmt = parseMoney(parts[1]);
-      const maybeName = parts[1];
-      const maybeEmail = parts[2];
-      if (maybeAmt == null && isEmail(maybeEmail)) {
-        const { due } = await addInvite({ game, name: maybeName, email: maybeEmail });
-        return send(
-          chatId,
-          `✅ Đã lưu invite: ${game.toUpperCase()} | ${maybeName} | ${maybeEmail}\n⏰ Due: ${dayjs(due).format(
-            "DD/MM/YYYY"
-          )}`,
-          { reply_markup: buildHomeMenu() }
-        );
-      }
-    }
-
-    // Case revenue: hopqua 200k
-    if (parts.length >= 2) {
-      const amt = parseMoney(parts[1]);
-      if (amt == null) {
-        return send(chatId, "❌ Sai cú pháp. Ví dụ: hopqua 200k (hoặc hopqua Ten email@gmail.com)", {
-          reply_markup: buildHomeMenu(),
-        });
-      }
-      await addGameRevenue({ game, amount: amt });
-      return send(chatId, `✅ Đã ghi ${game.toUpperCase()}: ${formatVND(amt)}`, { reply_markup: buildHomeMenu() });
-    }
-
-    return send(chatId, "❌ Thiếu dữ liệu. Ví dụ: dabong 100k", { reply_markup: buildHomeMenu() });
-  }
-
-  // unknown
-  await send(chatId, "❓ Không hiểu. Bấm 🆘 Help để xem cú pháp.", { reply_markup: buildHomeMenu() });
-}
-
-async function handleCallbackQuery(cq) {
-  const chatId = cq.message?.chat?.id;
-  const messageId = cq.message?.message_id;
-  const data = String(cq.data || "");
-
-  await tg("answerCallbackQuery", { callback_query_id: cq.id }).catch(() => {});
-  if (!chatId || !messageId) return;
-
-  // MENUS
-  if (data === "menu:home") {
-    return edit(chatId, messageId, "🏠 Menu chính", { reply_markup: buildHomeMenu() });
-  }
-  if (data === "menu:left") {
-    return edit(chatId, messageId, "⬅️ MENU TRÁI (Thu nhanh)", { reply_markup: buildLeftMenu() });
-  }
-  if (data === "menu:right") {
-    return edit(chatId, messageId, "➡️ MENU PHẢI (Báo cáo/Quản trị)", { reply_markup: buildRightMenu() });
-  }
-  if (data === "menu:help") {
-    return edit(chatId, messageId, helpText(), { reply_markup: buildHomeMenu() });
-  }
-
-  // QUICK EXAMPLES
-  if (data.startsWith("quick:")) {
-    const k = data.split(":")[1];
-    const examples = {
-      db: "dabong 100k",
-      hq: "hopqua 200k\nhoặc: hopqua Ten email@gmail.com",
-      qr: "qr 57k\nhoặc: qr Ten email@gmail.com",
-      them: "them 0.5k",
-    };
-    return send(chatId, `📌 Gửi theo mẫu:\n${examples[k] || ""}`, { reply_markup: buildHomeMenu() });
-  }
-
-  // ACTIONS
-  if (data === "action:report_month") return handleReportMonth(chatId);
-  if (data === "action:pending") return handlePending(chatId);
-  if (data === "action:phone_stats") return handlePhoneStats(chatId);
-
-  // RESET (ADMIN)
-  if (data === "action:reset") {
-    if (!isAdmin(chatId)) return send(chatId, "❌ Bạn không có quyền dùng RESET.", { reply_markup: buildHomeMenu() });
-    return edit(
-      chatId,
-      messageId,
-      "⚠️ RESET sẽ XÓA TOÀN BỘ DỮ LIỆU (trừ dòng tiêu đề) trên các sheet.\nBạn chắc chắn chứ?",
-      { reply_markup: buildResetConfirmMenu() }
-    );
-  }
-  if (data === "reset:cancel") {
-    return edit(chatId, messageId, "✅ Đã hủy RESET.", { reply_markup: buildHomeMenu() });
-  }
-  if (data === "reset:confirm") {
-    if (!isAdmin(chatId)) return edit(chatId, messageId, "❌ Bạn không có quyền dùng RESET.", { reply_markup: buildHomeMenu() });
-    await edit(chatId, messageId, "⏳ Đang RESET dữ liệu...", {});
-    await resetAllData();
-    return edit(chatId, messageId, "✅ RESET xong. Bot sẵn sàng chạy mới từ đầu.", { reply_markup: buildHomeMenu() });
-  }
-}
-
-/* ================== EXPRESS WEBHOOK ================== */
-const app = express();
-app.use(express.json());
-
-app.get("/", (req, res) => res.status(200).send(`OK ${VERSION}`));
-
-app.post("/webhook", async (req, res) => {
-  res.sendStatus(200);
+// ===== Webhook entry =====
+function doPost(e) {
   try {
-    const body = req.body;
-    if (body?.message) await handleTextMessage(body.message);
-    if (body?.callback_query) await handleCallbackQuery(body.callback_query);
-  } catch (e) {
-    console.error("WEBHOOK ERROR:", e?.message || e);
-  }
-});
+    const update = JSON.parse(e.postData.contents || "{}");
+    const msg = update.message;
+    if (!msg) return ContentService.createTextOutput("ok");
 
-/* ================== START ================== */
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log("✅ TIKTOK_LITE_BOT READY on", PORT, "|", VERSION));
+    const chatId = msg.chat && msg.chat.id;
+    const text = msg.text || "";
+    const fromId = msg.from && msg.from.id;
+
+    // follow-up session
+    const sess = getSession(chatId);
+    if (sess && sess.pending && sess.pending.type === "ask_checkin_reward") {
+      const reward = parseMoney(text);
+      if (reward == null) {
+        tgSendMessage(chatId, "Không parse được tiền. Ví dụ: 60k hoặc 30000");
+        return ContentService.createTextOutput("ok");
+      }
+      const { game, name, email } = sess.pending.data;
+      markInviteDoneAndAddCheckin(chatId, game, name, email, reward);
+      clearSession(chatId);
+      tgSendMessage(chatId, `✅ Checkin ${game} ${name}: +${fmtMoney(reward)}`);
+      return ContentService.createTextOutput("ok");
+    }
+
+    // slash commands
+    if (text.startsWith("/start")) {
+      tgSendMessage(
+        chatId,
+        "✅ TIKTOK_LITE_BOT (GAS Webhook)\n\n" +
+          "Gõ nhanh:\n" +
+          "• dabong 100k\n" +
+          "• hopqua Khanh mail@gmail.com\n" +
+          "• hopqua 200k\n" +
+          "• qr Khanh mail@gmail.com\n" +
+          "• qr 57k\n" +
+          "• them 0.5k\n\n" +
+          "Báo cáo:\n" +
+          "• /baocao\n" +
+          "• /pending\n"
+      );
+      return ContentService.createTextOutput("ok");
+    }
+
+    if (text.startsWith("/help")) {
+      tgSendMessage(
+        chatId,
+        "📌 Lệnh:\n" +
+          "GAME:\n" +
+          "- dabong 100k\n" +
+          "- hopqua <Name> <Email>\n" +
+          "- hopqua 200k\n" +
+          "- qr <Name> <Email>\n" +
+          "- qr 57k\n" +
+          "- them 0.5k\n\n" +
+          "BÁO CÁO:\n" +
+          "- /baocao\n" +
+          "- /pending\n"
+      );
+      return ContentService.createTextOutput("ok");
+    }
+
+    if (text.startsWith("/baocao")) {
+      reportMonth(chatId);
+      return ContentService.createTextOutput("ok");
+    }
+
+    if (text.startsWith("/pending")) {
+      listPending(chatId);
+      return ContentService.createTextOutput("ok");
+    }
+
+    if (text.startsWith("/undo")) {
+      tgSendMessage(chatId, "⚠️ /undo: hiện mới log UNDO_LOG. Muốn rollback thật mình sẽ làm tiếp.");
+      return ContentService.createTextOutput("ok");
+    }
+
+    // free-text commands
+    const parts = String(text).trim().split(/\s+/);
+    if (!parts[0]) return ContentService.createTextOutput("ok");
+    const cmd = parts[0].toLowerCase();
+
+    // db / dabong
+    if (cmd === "dabong" || cmd === "db") {
+      const amount = parseMoney(parts[1]);
+      if (amount == null) {
+        tgSendMessage(chatId, "Sai cú pháp. Ví dụ: dabong 100k");
+        return ContentService.createTextOutput("ok");
+      }
+      addGameRevenue(chatId, "db", amount, "invite_reward", "dabong invite reward");
+      tgSendMessage(chatId, `✅ DB +${fmtMoney(amount)}`);
+      return ContentService.createTextOutput("ok");
+    }
+
+    // hopqua / hq
+    if (cmd === "hopqua" || cmd === "hq") {
+      if (parts.length === 2) {
+        const amount = parseMoney(parts[1]);
+        if (amount == null) {
+          tgSendMessage(chatId, "Sai cú pháp. Ví dụ: hopqua 200k hoặc hopqua Khanh mail@gmail.com");
+          return ContentService.createTextOutput("ok");
+        }
+        addGameRevenue(chatId, "hq", amount, "invite_reward", "hopqua invite reward");
+        tgSendMessage(chatId, `✅ HQ +${fmtMoney(amount)}`);
+        return ContentService.createTextOutput("ok");
+      }
+
+      if (parts.length >= 3) {
+        const name = parts[1];
+        const email = parts[2];
+        const { due } = createInvite(chatId, "hq", name, email);
+        const dueFmt = Utilities.formatDate(new Date(due), getTZ(), "EEE dd/MM");
+        tgSendMessage(chatId, `✅ Đã lưu invite HQ: ${name} (${email})\n⏰ Due: ${dueFmt} (${getTZ()})`);
+        return ContentService.createTextOutput("ok");
+      }
+
+      tgSendMessage(chatId, "Sai cú pháp. Ví dụ: hopqua 200k hoặc hopqua Khanh mail@gmail.com");
+      return ContentService.createTextOutput("ok");
+    }
+
+    // qr
+    if (cmd === "qr") {
+      if (parts.length === 2) {
+        const amount = parseMoney(parts[1]);
+        if (amount == null) {
+          tgSendMessage(chatId, "Sai cú pháp. Ví dụ: qr 57k hoặc qr Khanh mail@gmail.com");
+          return ContentService.createTextOutput("ok");
+        }
+        addGameRevenue(chatId, "qr", amount, "invite_reward", "qr invite reward");
+        tgSendMessage(chatId, `✅ QR +${fmtMoney(amount)}`);
+        return ContentService.createTextOutput("ok");
+      }
+
+      if (parts.length >= 3) {
+        const name = parts[1];
+        const email = parts[2];
+        const { due } = createInvite(chatId, "qr", name, email);
+        const dueFmt = Utilities.formatDate(new Date(due), getTZ(), "EEE dd/MM");
+        tgSendMessage(chatId, `✅ Đã lưu invite QR: ${name} (${email})\n⏰ Due: ${dueFmt} (${getTZ()})`);
+        return ContentService.createTextOutput("ok");
+      }
+
+      tgSendMessage(chatId, "Sai cú pháp. Ví dụ: qr 57k hoặc qr Khanh mail@gmail.com");
+      return ContentService.createTextOutput("ok");
+    }
+
+    // other income
+    if (cmd === "them") {
+      const amount = parseMoney(parts[1]);
+      if (amount == null) {
+        tgSendMessage(chatId, "Sai cú pháp. Ví dụ: them 0.5k");
+        return ContentService.createTextOutput("ok");
+      }
+      addGameRevenue(chatId, "other", amount, "other_income", "other income");
+      tgSendMessage(chatId, `✅ THÊM +${fmtMoney(amount)}`);
+      return ContentService.createTextOutput("ok");
+    }
+
+    // admin placeholder
+    if (cmd === "chinh") {
+      if (!isAdmin(fromId)) {
+        tgSendMessage(chatId, "⛔ Bạn không có quyền dùng lệnh này.");
+        return ContentService.createTextOutput("ok");
+      }
+      tgSendMessage(chatId, "Lệnh admin chưa implement đầy đủ ở bản này.");
+      return ContentService.createTextOutput("ok");
+    }
+
+    tgSendMessage(chatId, "Mình không hiểu lệnh. Gõ /help để xem cú pháp.");
+    return ContentService.createTextOutput("ok");
+  } catch (err) {
+    console.log("doPost error:", err);
+    return ContentService.createTextOutput("ok");
+  }
+}
