@@ -8,7 +8,7 @@ import cron from "node-cron";
 /* =========================
  * ENV
  * ========================= */
-const VERSION = "LOT-MAxx-SMARTPARSE-WALLET-SELL-CUTE-HTML-WON-FIXED-PERSIST-GAME-SOLD";
+const VERSION = "LOT-MAxx-SMARTPARSE-WALLET-SELL-ANALYZE-SOLDFLAG-FIXNEW";
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_APPLICATION_CREDENTIALS =
@@ -32,16 +32,11 @@ function escapeHtml(s) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
 }
-function nowIso() {
-  return new Date().toISOString();
-}
-function normalizeSpaces(s) {
-  return String(s || "").replace(/\s+/g, " ").trim();
-}
 
 function cuteifyHtml(text) {
   const tails = [" 😚", " 🫶", " ✨", " ^^", " 😝", " 🤭", " 💖"];
   let s = String(text ?? "");
+
   s = s.replaceAll("Không hiểu", "Nhập sai rồi bạn iu ơi ^^");
 
   const endsEmoji = /[\u{1F300}-\u{1FAFF}\u2600-\u27BF]$/u.test(s.trim());
@@ -99,26 +94,27 @@ function mainKb() {
   return kb([[{ text: "⬅️ Menu" }, { text: "➡️ Menu" }]]);
 }
 function leftKb() {
-  // ✅ Back luôn nằm trên cùng
+  // Back luôn nằm trên cùng
   return kb([
     [{ text: "⬅️ Back" }],
     [{ text: "📱 Mua Máy (Lô)" }, { text: "💸 Bán Máy" }],
     [{ text: "🧪 Kiểm Tra Máy (Tất cả)" }, { text: "🧪 20 Lô Gần Nhất" }],
-    [{ text: "📋 Danh Sách Máy" }],
+    [{ text: "🧾 Danh Sách Máy" }],
     [{ text: "⚽ Thu Đá Bóng" }, { text: "🎁 Thu Hộp Quà" }],
     [{ text: "🔳 Thu QR" }, { text: "➕ Thu Khác" }],
   ]);
 }
 function rightKb() {
+  // Back luôn nằm trên cùng + bỏ "Lời/Lỗ Máy" cũ
   return kb([
     [{ text: "⬅️ Back" }],
+    [{ text: "📊 Phân Tích" }],
     [{ text: "💰 Tổng Doanh Thu" }],
     [{ text: "📅 Tháng Này" }, { text: "⏮️ Tháng Trước" }],
     [{ text: "📊 Thống Kê Game" }],
-    [{ text: "📊 Phân Tích" }],
     [{ text: "💼 Xem Ví" }],
     [{ text: "✏️ Sửa Số Dư Ví" }],
-    [{ text: "✏️ Sửa Tổng Doanh Thu" }],
+    [{ text: "✏️ Sửa Số Dư Tổng Doanh Thu" }],
     [{ text: "📘 Hướng Dẫn" }],
     [{ text: "🧠 Smart Parse: Bật/Tắt" }],
     [{ text: "🧨 Xóa Sạch Dữ Liệu" }],
@@ -161,6 +157,9 @@ async function clearValues(rangeA1) {
 /* =========================
  * Normalize + Money
  * ========================= */
+function nowIso() {
+  return new Date().toISOString();
+}
 function removeDiacritics(str) {
   if (!str) return "";
   return String(str)
@@ -182,6 +181,9 @@ function normalizeForParse(text) {
   tmp = tmp.replace(/[，]/g, ",").replace(/\s+/g, " ").trim();
   tmp = tmp.replace(/__email_(\d+)__/g, (_, i) => emails[Number(i)] || "");
   return tmp;
+}
+function normalizeSpaces(s) {
+  return String(s || "").replace(/\s+/g, " ").trim();
 }
 function parseMoney(input) {
   if (input == null) return null;
@@ -247,11 +249,10 @@ async function toggleSmartParse() {
 }
 
 /* =========================
- * Machine Analysis Payouts (ONLY FOR PHÂN TÍCH MÁY)
+ * Payouts (PHÂN TÍCH MÁY)
  * ========================= */
 async function getMachinePayouts() {
-  // ✅ Chốt: HQ=150k, QR=57k, DB=100k chỉ dùng cho phân tích máy
-  // (có thể cho chỉnh bằng SETTINGS nếu muốn)
+  // theo yêu cầu: HQ=150k, QR=57k, DB=100k (chỉ dùng phân tích máy)
   const hq = parseMoney((await getSetting("MACHINE_PAYOUT_HQ")) || "150k") ?? 150000;
   const qr = parseMoney((await getSetting("MACHINE_PAYOUT_QR")) || "57k") ?? 57000;
   const db = parseMoney((await getSetting("MACHINE_PAYOUT_DB")) || "100k") ?? 100000;
@@ -298,13 +299,11 @@ async function listWallets() {
 async function readWalletLog() {
   const rows = await getValues("WALLET_LOG!A2:H");
   return rows.map((r) => ({
-    ts: String(r[0] || ""),
     wallet: String(r[1] || "").trim().toLowerCase(),
-    type: String(r[2] || "").trim().toLowerCase(),
     amount: Number(String(r[3] || "0").replace(/,/g, "")) || 0,
     ref_type: String(r[4] || "").trim().toLowerCase(),
     ref_id: String(r[5] || "").trim(),
-    note: String(r[6] || ""),
+    type: String(r[2] || "").trim().toLowerCase(),
   }));
 }
 
@@ -351,7 +350,7 @@ async function setWalletBalanceAbsolute(walletCode, newBalance, chatId) {
 }
 
 /* =========================
- * Game Revenue (MAIN doanh thu - manual + adjust ONLY)
+ * Game Revenue (DOANH THU CHÍNH)
  * ========================= */
 async function addGameRevenue({ game, type, amount, note, chatId, userName }) {
   await appendValues("GAME_REVENUE!A1", [[nowIso(), game, type, amount, note || "", String(chatId || ""), userName || ""]]);
@@ -391,13 +390,12 @@ async function nextLotCode() {
   return "MA" + String(max + 1).padStart(2, "0");
 }
 
-async function addLot({ qty, model, total_price, wallet, note, chatId }) {
+async function addLot({ qty, model, total_price, wallet, note }) {
   const lot = await nextLotCode();
   const unit = Math.round(total_price / qty);
 
   await appendValues("LOTS!A1", [[lot, nowIso(), qty, model, total_price, unit, wallet, note || ""]]);
 
-  // mua máy => trừ ví
   await addWalletLog({
     wallet,
     type: "lot_buy",
@@ -405,16 +403,18 @@ async function addLot({ qty, model, total_price, wallet, note, chatId }) {
     ref_type: "lot",
     ref_id: lot,
     note: note || "",
-    chatId,
+    chatId: "",
   });
 
+  const ids = [];
   for (let i = 1; i <= qty; i++) {
     const phone_id = `${lot}-${i}`;
-    // PHONES: A..G (H sold_flag, I sold_ts có thể để trống)
-    await appendValues("PHONES!A1", [[phone_id, lot, nowIso(), unit, "new", "none", note || ""]]);
+    ids.push(phone_id);
+    // PHONES columns A..I: phone_id, lot, ts, unit, status, game, note, sold_flag, sold_ts
+    await appendValues("PHONES!A1", [[phone_id, lot, nowIso(), unit, "new", "none", note || "", "", ""]]);
   }
 
-  return { lot, unit };
+  return { lot, unit, ids };
 }
 
 async function readLots() {
@@ -434,54 +434,45 @@ async function readLots() {
 }
 
 async function readPhones() {
-  // ✅ đọc thêm sold_flag (H) + sold_ts (I)
+  // Expect A..I
   const rows = await getValues("PHONES!A2:I");
   return rows
     .filter((r) => r.some((c) => String(c || "").trim() !== ""))
-    .map((r) => {
-      const status = String(r[4] || "").trim().toLowerCase();
-      const soldFlag = String(r[7] || "").trim().toLowerCase();
-      const sold = soldFlag === "1" || soldFlag === "true" || soldFlag === "sold" || status === "sold";
-      return {
-        phone_id: String(r[0] || "").trim(),
-        lot: String(r[1] || "").trim().toUpperCase(),
-        unit: Number(String(r[3] || "0").replace(/,/g, "")) || 0,
-        status, // new / ok / tach / hue / sold(legacy)
-        game: String(r[5] || "").trim().toLowerCase(), // hq / qr / db / none
-        note: String(r[6] || ""),
-        sold,
-        sold_ts: String(r[8] || ""),
-      };
-    });
+    .map((r) => ({
+      phone_id: String(r[0] || "").trim(),
+      lot: String(r[1] || "").trim().toUpperCase(),
+      unit: Number(String(r[3] || "0").replace(/,/g, "")) || 0,
+      status: String(r[4] || "").trim().toLowerCase(), // new / win / lose / draw (or legacy ok/tach)
+      game: String(r[5] || "").trim().toLowerCase(),   // hq / qr / db / none
+      note: String(r[6] || ""),
+      sold_flag: String(r[7] || "").trim(),            // "1" or ""
+      sold_ts: String(r[8] || ""),
+    }));
 }
 
+// Update E..I for a phone
 async function updatePhoneRowById(phone_id, patch) {
   const rows = await getValues("PHONES!A2:I");
   for (let i = 0; i < rows.length; i++) {
     const id = String(rows[i][0] || "").trim();
     if (id === phone_id) {
       const rowNumber = i + 2;
+
       const curStatus = String(rows[i][4] || "");
       const curGame = String(rows[i][5] || "");
+      const curSoldFlag = String(rows[i][7] || "");
+      const curSoldTs = String(rows[i][8] || "");
+
       const status = patch.status ?? curStatus;
       const game = patch.game ?? curGame;
-      await updateValues(`PHONES!E${rowNumber}:F${rowNumber}`, [[status, game]]);
+      const sold_flag = patch.sold_flag ?? curSoldFlag;
+      const sold_ts = patch.sold_ts ?? curSoldTs;
+
+      await updateValues(`PHONES!E${rowNumber}:I${rowNumber}`, [[status, game, String(rows[i][6] || ""), sold_flag, sold_ts]]);
       return true;
     }
   }
   return false;
-}
-
-async function markPhonesSoldByIds(ids) {
-  // set sold_flag=1, sold_ts=nowIso (KHÔNG đụng status/game)
-  const rows = await getValues("PHONES!A2:I");
-  const now = nowIso();
-  for (let i = 0; i < rows.length; i++) {
-    const id = String(rows[i][0] || "").trim();
-    if (!ids.includes(id)) continue;
-    const rowNumber = i + 2;
-    await updateValues(`PHONES!H${rowNumber}:I${rowNumber}`, [["1", now]]);
-  }
 }
 
 /* =========================
@@ -571,206 +562,229 @@ function parseSellSentence(text) {
   return { lot, qty, totalPrice, model, wallet };
 }
 
-/* =========================
- * Resolve lot parsing (FIX: ma01 hq1 tach2)
- * ========================= */
-function explodeCompactToken(tk) {
-  // hq1 -> ["hq","1"], tach2 -> ["tach","2"], loi1 -> ["loi","1"]
-  const m = tk.match(/^(hq|qr|db|tach|loi|lo|hue)(\d+)$/);
-  if (!m) return [tk];
-  return [m[1], m[2]];
+function detectGameToken(norm) {
+  const t = ` ${norm} `;
+  if (t.includes(" hq ") || t.includes(" hopqua ") || t.includes(" hop qua ")) return "hq";
+  if (t.includes(" qr ")) return "qr";
+  if (t.includes(" db ") || t.includes(" dabong ") || t.includes(" da bong ")) return "db";
+  return "";
 }
 
+/**
+ * Parse resolve:
+ * - Supports: "ma01 hq1 tach2"
+ * - Supports: "ma01 loi1 hq tach2"
+ * - Supports: "ma01 lo2" (lo = lỗ => tach)
+ */
 function parseLotResolve(text) {
   const norm = normalizeForParse(text);
   const lot = parseLotCode(text);
   if (!lot) return null;
 
-  let tokens = norm.split(" ").filter(Boolean);
-  // explode compact tokens
-  tokens = tokens.flatMap(explodeCompactToken);
-
+  const tokens = norm.split(" ").filter(Boolean);
   const segments = [];
-  let missingGame = false;
-  let missingGameCount = 0;
-
   let i = 0;
+
+  const pushSeg = (kind, count, game = "") => {
+    segments.push({ kind, count: Math.max(0, Math.min(50, count)), game: game || "" });
+  };
+
   while (i < tokens.length) {
     const tk = tokens[i];
 
-    // ✅ direct game token means profit
-    const isGame = tk === "hq" || tk === "qr" || tk === "db";
-    if (isGame) {
-      let count = 1;
-      if (i + 1 < tokens.length && tokens[i + 1].match(/^\d+$/)) {
-        count = Number(tokens[i + 1]) || 1;
-        i += 2;
-      } else {
+    // direct game tokens: hq1 / qr1 / db1 => means "win"
+    const mGameCount = tk.match(/^(hq|qr|db)\s*(\d+)?$/);
+    if (mGameCount) {
+      const game = mGameCount[1];
+      let count = mGameCount[2] ? Number(mGameCount[2]) : 1;
+      // also support next token number
+      if (!mGameCount[2] && i + 1 < tokens.length && tokens[i + 1].match(/^\d+$/)) {
+        count = Number(tokens[i + 1]);
         i += 1;
       }
-      segments.push({ kind: "loi", count: Math.max(0, Math.min(50, count)), game: tk });
+      pushSeg("win", count, game);
+      i += 1;
       continue;
     }
 
-    // synonyms
-    const isLoi = tk === "loi" || tk === "lai" || tk === "an" || tk === "duoc" || tk === "ok";
-    const isTach = tk === "tach" || tk === "chet" || tk === "tac" || tk === "lo"; // ✅ "lo" = lỗ
-    const isHue = tk === "hue" || tk === "hoa" || tk === "thuvon" || tk === "thu" || tk === "von";
+    const isLoi = tk === "loi" || tk === "lai" || tk === "an" || tk === "duoc" || tk === "ok" || tk === "win";
+    const isTach = tk === "tach" || tk === "tac" || tk === "chet" || tk === "lo" || tk === "lose";
+    const isHue = tk === "hue" || tk === "hoa" || tk === "thuvon" || tk === "thu" || tk === "von" || tk === "draw";
 
     if (isLoi || isTach || isHue) {
-      const kind = isLoi ? "loi" : isTach ? "tach" : "hue";
+      const kind = isLoi ? "win" : isTach ? "lose" : "draw";
       let count = 1;
 
       if (i + 1 < tokens.length && tokens[i + 1].match(/^\d+$/)) {
-        count = Number(tokens[i + 1]) || 1;
+        count = Number(tokens[i + 1]);
         i += 2;
       } else {
         i += 1;
       }
 
+      // optional "may/dt"
       if (i < tokens.length && (tokens[i] === "may" || tokens[i] === "dt")) i++;
 
       let game = "";
-      if (kind === "loi") {
-        const next = tokens[i] || "";
-        if (next === "hq" || next === "qr" || next === "db") {
-          game = next;
-          i++;
-        } else {
-          missingGame = true;
-          missingGameCount += count;
+      if (kind === "win") {
+        // allow next token game: hq/qr/db
+        if (i < tokens.length) {
+          const g = detectGameToken(tokens[i]);
+          if (g) {
+            game = g;
+            i += 1;
+          }
         }
       }
 
-      segments.push({ kind, count: Math.max(0, Math.min(50, count)), game });
+      pushSeg(kind, count, game);
       continue;
     }
 
     i++;
   }
 
-  // fallback if user writes only "tach2" style already handled, so no need.
-  return { lot, segments, missingGame, missingGameCount };
+  return { lot, segments };
 }
 
 /* =========================
- * Sessions
+ * Status helpers (legacy tolerant)
  * ========================= */
-const sessions = new Map();
-function setSession(chatId, sess) {
-  sessions.set(String(chatId), sess);
+function isSoldPhone(p) {
+  if (String(p.sold_flag || "").trim() === "1") return true;
+  // legacy fallback: status sold
+  return String(p.status || "").toLowerCase() === "sold";
 }
-function getSession(chatId) {
-  return sessions.get(String(chatId));
+function normStatus(p) {
+  const s = String(p.status || "").toLowerCase();
+  if (s === "ok") return "win";
+  if (s === "tach") return "lose";
+  if (s === "hue") return "draw";
+  if (s === "sold") return "sold";
+  if (s === "new") return "new";
+  if (s === "win" || s === "lose" || s === "draw") return s;
+  // unknown -> keep
+  return s || "new";
 }
-function clearSession(chatId) {
-  sessions.delete(String(chatId));
+function isWinPhone(p) {
+  const st = normStatus(p);
+  return st === "win" && ["hq", "qr", "db"].includes(String(p.game || "").toLowerCase());
+}
+function isLosePhone(p) {
+  const st = normStatus(p);
+  return st === "lose";
+}
+function isDrawPhone(p) {
+  const st = normStatus(p);
+  return st === "draw";
+}
+function isNewPhone(p) {
+  const st = normStatus(p);
+  // New chỉ là chưa chốt + chưa bán
+  return st === "new" && !isSoldPhone(p);
 }
 
 /* =========================
- * Note -> device label
+ * Apply resolve / sell
  * ========================= */
-function extractDeviceLabelFromLotNote(lotNote, fallbackModel) {
-  const s = String(lotNote || "");
-  const parts = s.split("|").map((x) => normalizeSpaces(x));
-  // prefer last meaningful token not containing fallbackModel
-  for (let i = parts.length - 1; i >= 0; i--) {
-    const p = parts[i];
-    if (!p) continue;
-    const low = removeDiacritics(p).toLowerCase();
-    const mLow = removeDiacritics(fallbackModel || "").toLowerCase();
-    if (mLow && low.includes(mLow)) continue;
-    // pick something like Note4, S9, Note8...
-    const m = p.match(/[A-Za-z]+\s*\d+[A-Za-z]?/);
-    if (m) return normalizeSpaces(m[0]);
-  }
-  return "";
-}
-
-/* =========================
- * Apply resolve / sell (FIX: persist game on sold)
- * ========================= */
-async function applyLotResolve({ chatId, lot, segments }) {
+async function applyLotResolve({ chatId, userName, lot, segments }) {
   const phones = await readPhones();
-  const lotPhones = phones.filter((p) => p.lot === lot);
+  const lotPhonesAll = phones.filter((p) => p.lot === lot);
 
-  if (lotPhones.length === 0) {
+  if (lotPhonesAll.length === 0) {
     await send(chatId, `🥺 Không thấy mã lô <code>${escapeHtml(lot)}</code> á. Bạn check lại nha~`, { reply_markup: leftKb() });
     return true;
   }
 
-  // pick phones to resolve: prioritize "new" first, then unresolved (not new)
+  const payouts = await getMachinePayouts();
+
+  // Pick phones not yet resolved first: status new AND not sold
   const pick = (n) => {
-    const pending = lotPhones.filter((p) => p.status === "new");
-    const pool = pending.length > 0 ? pending : lotPhones.filter((p) => p.status !== "sold");
+    const pool1 = lotPhonesAll.filter((p) => normStatus(p) === "new" && !isSoldPhone(p));
+    const pool2 = lotPhonesAll.filter((p) => normStatus(p) !== "sold" && !isSoldPhone(p)); // unresolved or resolved but unsold
+    const pool = pool1.length > 0 ? pool1 : pool2;
     return pool.slice(0, n).map((p) => p.phone_id);
   };
 
-  let hqCount = 0,
-    qrCount = 0,
-    dbCount = 0,
-    tachCount = 0,
-    hueCount = 0;
+  let cntWin = 0,
+    cntLose = 0,
+    cntDraw = 0;
+  let hq = 0,
+    qr = 0,
+    db = 0;
+  let totalGame = 0;
 
   for (const seg of segments) {
     const ids = pick(seg.count);
     if (ids.length === 0) continue;
 
-    if (seg.kind === "tach") {
-      for (const id of ids) await updatePhoneRowById(id, { status: "tach" }); // keep game untouched if any
-      tachCount += ids.length;
+    if (seg.kind === "lose") {
+      for (const id of ids) await updatePhoneRowById(id, { status: "lose", game: "none" });
+      cntLose += ids.length;
       continue;
     }
 
-    if (seg.kind === "hue") {
-      for (const id of ids) await updatePhoneRowById(id, { status: "hue", game: "none" });
-      hueCount += ids.length;
+    if (seg.kind === "draw") {
+      for (const id of ids) await updatePhoneRowById(id, { status: "draw", game: "none" });
+      cntDraw += ids.length;
       continue;
     }
 
-    // seg.kind === "loi"
-    const g = (seg.game || "").toLowerCase();
-    if (g !== "hq" && g !== "qr" && g !== "db") continue;
+    // win
+    const game = seg.game || ""; // if empty => ask user
+    if (!game) {
+      await send(
+        chatId,
+        `Bạn ghi <b>lời ${seg.count}</b> là ăn <b>HQ</b> hay <b>QR</b> hay <b>DB</b> á?\nVí dụ: <code>ma ${lot.slice(2)} hq${seg.count} tach0</code>`,
+        { reply_markup: leftKb() }
+      );
+      return true;
+    }
 
-    for (const id of ids) await updatePhoneRowById(id, { status: "ok", game: g });
+    const per = payouts[game] ?? payouts.hq;
+    for (const id of ids) await updatePhoneRowById(id, { status: "win", game });
+    cntWin += ids.length;
 
-    if (g === "hq") hqCount += ids.length;
-    if (g === "qr") qrCount += ids.length;
-    if (g === "db") dbCount += ids.length;
+    if (game === "hq") hq += ids.length;
+    if (game === "qr") qr += ids.length;
+    if (game === "db") db += ids.length;
+
+    totalGame += ids.length * per;
   }
 
-  const payouts = await getMachinePayouts();
-  const totalGame = hqCount * payouts.hq + qrCount * payouts.qr + dbCount * payouts.db;
-
-  // ✅ Reply format đúng yêu cầu, KHÔNG gợi ý bán
   const html =
     `🧾 <b>CHỐT LÔ MÃ ${escapeHtml(lot.slice(2))}</b>\n` +
-    `✅ <b>Lời:</b> <b>${hqCount + qrCount + dbCount}</b> MÁY (HQ:${hqCount} / QR:${qrCount} / DB:${dbCount})\n` +
-    `😵 <b>Lỗ:</b> <b>${tachCount}</b> MÁY TẠCH\n` +
-    `😌 <b>Huề:</b> <b>${hueCount}</b>\n` +
-    `🎮 <b>Tổng thu game (phân tích):</b> <b>${moneyWON(totalGame)}</b>`;
+    `✅ <b>Lời</b>: <b>${cntWin}</b> MÁY (HQ:${hq} / QR:${qr} / DB:${db})\n` +
+    `😵 <b>Lỗ</b>: <b>${cntLose}</b> MÁY TẠCH\n` +
+    `😌 <b>Huề</b>: <b>${cntDraw}</b>\n` +
+    `🎮 <b>Tổng thu game (phân tích)</b>: <b>${moneyWON(totalGame)}</b>`;
 
   await send(chatId, html, { reply_markup: leftKb() });
   return true;
 }
 
 async function sellFromLot({ chatId, lot, qty, totalPrice, wallet }) {
-  const lots = await readLots();
-  const lotRow = lots.find((x) => x.lot === lot);
   const phones = await readPhones();
-  const lotPhones = phones.filter((p) => p.lot === lot);
+  const lotPhonesAll = phones.filter((p) => p.lot === lot);
 
-  if (lotPhones.length === 0) {
+  if (lotPhonesAll.length === 0) {
     await send(chatId, `🥺 Không thấy lô <code>${escapeHtml(lot)}</code> luôn á. Bạn check lại mã nha~`, { reply_markup: leftKb() });
     return true;
   }
 
-  // sellable = not sold
-  const sellable = lotPhones
-    .filter((p) => !p.sold)
+  // sellable: not sold_flag
+  const sellable = lotPhonesAll
+    .filter((p) => !isSoldPhone(p))
     .sort((a, b) => {
-      // ưu tiên bán máy chưa làm trước
-      const rank = (p) => (p.status === "new" ? 0 : p.status === "ok" ? 1 : p.status === "hue" ? 2 : p.status === "tach" ? 3 : 4);
+      // ưu tiên bán máy đã lỗ trước, rồi draw, rồi new, rồi win (tuỳ bạn – để tránh mất lời còn giữ)
+      const rank = (p) => {
+        const st = normStatus(p);
+        if (st === "lose") return 0;
+        if (st === "draw") return 1;
+        if (st === "new") return 2;
+        if (st === "win") return 3;
+        return 4;
+      };
       return rank(a) - rank(b);
     });
 
@@ -780,10 +794,11 @@ async function sellFromLot({ chatId, lot, qty, totalPrice, wallet }) {
     return true;
   }
 
-  // ✅ mark sold flag (KHÔNG reset game / KHÔNG đổi kết quả)
-  await markPhonesSoldByIds(ids);
+  // Mark sold_flag, keep status/game as-is
+  const ts = nowIso();
+  for (const id of ids) await updatePhoneRowById(id, { sold_flag: "1", sold_ts: ts });
 
-  // ✅ totalPrice = TỔNG tiền thu về -> cộng ví
+  // wallet + log
   await addWalletLog({
     wallet,
     type: "machine_sell",
@@ -794,14 +809,23 @@ async function sellFromLot({ chatId, lot, qty, totalPrice, wallet }) {
     chatId,
   });
 
-  // ✅ show device label if note exists
-  const deviceLabel = extractDeviceLabelFromLotNote(lotRow?.note || "", lotRow?.model || "");
-  const deviceText = deviceLabel ? ` ${escapeHtml(deviceLabel)}` : "";
+  // Get note name (e.g. Note4) from LOT note if available
+  const lots = await readLots();
+  const l = lots.find((x) => x.lot === lot);
+  let noteName = "";
+  if (l?.note) {
+    // try to pick a short token like Note4 / S9 / etc
+    const tokens = String(l.note).split("|").map((x) => x.trim()).filter(Boolean);
+    // pick last non-empty part as user note
+    const last = tokens[tokens.length - 1] || "";
+    // if looks like phone name, use it
+    if (last && last.length <= 20) noteName = last;
+  }
 
   const html =
     `💸 <b>BÁN XONG</b> 🥳\n` +
     `• Lô: <b>MÃ ${escapeHtml(lot.slice(2))}</b>\n` +
-    `• Số máy: <b>${ids.length}</b> máy${deviceText}\n` +
+    `• Số máy: <b>${ids.length}</b> máy${noteName ? ` <b>${escapeHtml(noteName)}</b>` : ""}\n` +
     `• Tiền về ví <code>${escapeHtml(wallet.toUpperCase())}</code>: <b>${moneyWON(Math.round(totalPrice))}</b>\n\n` +
     `Phân tích lô sẽ tự cộng tiền bán này vào nhé 😝`;
 
@@ -810,7 +834,7 @@ async function sellFromLot({ chatId, lot, qty, totalPrice, wallet }) {
 }
 
 /* =========================
- * Reports (MAIN doanh thu)
+ * Reports (Right Menu)
  * ========================= */
 async function reportTotalRevenue(chatId) {
   const rows = await readGameRevenue();
@@ -851,233 +875,255 @@ async function reportStatsGames(chatId) {
 }
 
 /* =========================
- * ✅ Danh sách lô + 20 lô gần nhất (FIX logic)
- * ========================= */
-async function computeLotSummary(lot, phones, walletLogs) {
-  const lotPhones = phones.filter((p) => p.lot === lot.lot);
-
-  // sold money by lot
-  const soldMoney = walletLogs
-    .filter((l) => l.type === "machine_sell" && l.ref_type === "lot" && String(l.ref_id || "").toUpperCase() === lot.lot)
-    .reduce((a, b) => a + (b.amount || 0), 0);
-
-  // sold count (use sold_flag; legacy status sold counts too)
-  const soldCount = lotPhones.filter((p) => p.sold).length;
-  const remainCount = Math.max(0, lot.qty - soldCount);
-
-  // profit counts MUST include sold (game is permanent)
-  const hq = lotPhones.filter((p) => p.game === "hq").length;
-  const qr = lotPhones.filter((p) => p.game === "qr").length;
-  const db = lotPhones.filter((p) => p.game === "db").length;
-  const profitCount = hq + qr + db;
-
-  const tach = lotPhones.filter((p) => p.status === "tach").length;
-  const hue = lotPhones.filter((p) => p.status === "hue").length;
-  const neu = lotPhones.filter((p) => p.status === "new").length;
-
-  // profit still holding (profit but not sold)
-  const holdingProfit = lotPhones.filter((p) => (p.game === "hq" || p.game === "qr" || p.game === "db") && !p.sold).length;
-
-  const payouts = await getMachinePayouts();
-  const gameMoney = hq * payouts.hq + qr * payouts.qr + db * payouts.db;
-
-  const laiTam = gameMoney - lot.total; // game - mua
-  const laiThuc = gameMoney + soldMoney - lot.total; // game + ban - mua
-
-  return {
-    soldMoney,
-    soldCount,
-    remainCount,
-    hq,
-    qr,
-    db,
-    profitCount,
-    tach,
-    hue,
-    neu,
-    holdingProfit,
-    gameMoney,
-    laiTam,
-    laiThuc,
-  };
-}
-
-async function listLotsAll(chatId) {
-  const lots = await readLots();
-  const phones = await readPhones();
-  const walletLogs = await readWalletLog();
-
-  if (lots.length === 0) {
-    await send(chatId, `Chưa có lô nào hết á 😝\nBấm <b>📱 Mua Máy (Lô)</b> để tạo lô nha~`, { reply_markup: leftKb() });
-    return;
-  }
-
-  const sorted = [...lots].sort((a, b) => (a.ts < b.ts ? 1 : -1));
-
-  const lines = [];
-  for (const l of sorted) {
-    const s = await computeLotSummary(l, phones, walletLogs);
-
-    const statusLine =
-      `  Trạng thái: Lời <b>${s.profitCount}</b> máy (HQ:${s.hq} / QR:${s.qr} / DB:${s.db}) / Huề <b>${s.hue}</b> / Lỗ <b>${s.tach}</b> / New <b>${s.neu}</b> / Sold <b>${s.soldCount}</b>\n` +
-      `  Lời còn giữ: <b>${s.holdingProfit}</b> máy | Còn lại: <b>${s.remainCount}</b> máy\n\n` +
-      `  Tổng thu game: <b>${moneyWON(s.gameMoney)}</b>\n` +
-      `  Lãi tạm: <b>${moneyWON(s.gameMoney)}</b> - <b>${moneyWON(l.total)}</b> = <b>${moneyWON(s.laiTam)}</b>\n` +
-      `  Đã bán: <b>${moneyWON(s.soldMoney)}</b>\n` +
-      `  Lãi thực: <b>${moneyWON(s.gameMoney)}</b> + <b>${moneyWON(s.soldMoney)}</b> - <b>${moneyWON(l.total)}</b> = <b>${moneyWON(s.laiThuc)}</b>`;
-
-    lines.push(
-      `• <b>${escapeHtml(l.lot)}</b>: Mua <b>${l.qty}</b> máy <b>${escapeHtml(l.model || "")}</b> | Tổng <b>${moneyWON(l.total)}</b> | Ví <code>${escapeHtml(String(l.wallet || "").toUpperCase())}</code>\n\n${statusLine}`
-    );
-  }
-
-  const html = `🧪 <b>DANH SÁCH LÔ MÁY</b> (Tất cả)\n\n${lines.join("\n\n")}`;
-  await send(chatId, html, { reply_markup: leftKb() });
-}
-
-async function listLots20(chatId) {
-  const lots = await readLots();
-  const phones = await readPhones();
-  const walletLogs = await readWalletLog();
-
-  if (lots.length === 0) {
-    await send(chatId, `Chưa có lô nào hết á 😝\nBấm <b>📱 Mua Máy (Lô)</b> để tạo lô nha~`, { reply_markup: leftKb() });
-    return;
-  }
-
-  const sorted = [...lots].sort((a, b) => (a.ts < b.ts ? 1 : -1)).slice(0, 20);
-
-  const lines = [];
-  for (const l of sorted) {
-    const s = await computeLotSummary(l, phones, walletLogs);
-
-    const statusLine =
-      `  Trạng thái: Lời <b>${s.profitCount}</b> máy (HQ:${s.hq} / QR:${s.qr} / DB:${s.db}) / Huề <b>${s.hue}</b> / Lỗ <b>${s.tach}</b> / New <b>${s.neu}</b> / Sold <b>${s.soldCount}</b>\n` +
-      `  Lời còn giữ: <b>${s.holdingProfit}</b> máy | Còn lại: <b>${s.remainCount}</b> máy\n\n` +
-      `  Tổng thu game: <b>${moneyWON(s.gameMoney)}</b>\n` +
-      `  Lãi tạm: <b>${moneyWON(s.gameMoney)}</b> - <b>${moneyWON(l.total)}</b> = <b>${moneyWON(s.laiTam)}</b>\n` +
-      `  Đã bán: <b>${moneyWON(s.soldMoney)}</b>\n` +
-      `  Lãi thực: <b>${moneyWON(s.gameMoney)}</b> + <b>${moneyWON(s.soldMoney)}</b> - <b>${moneyWON(l.total)}</b> = <b>${moneyWON(s.laiThuc)}</b>`;
-
-    lines.push(
-      `• <b>${escapeHtml(l.lot)}</b>: Mua <b>${l.qty}</b> máy <b>${escapeHtml(l.model || "")}</b> | Tổng <b>${moneyWON(l.total)}</b> | Ví <code>${escapeHtml(String(l.wallet || "").toUpperCase())}</code>\n\n${statusLine}`
-    );
-  }
-
-  const html = `🧪 <b>DANH SÁCH LÔ MÁY</b> (20 lô gần nhất)\n\n${lines.join("\n\n")}`;
-  await send(chatId, html, { reply_markup: leftKb() });
-}
-
-/* =========================
- * ✅ Danh sách máy
- * ========================= */
-async function listPhonesPretty(chatId) {
-  const lots = await readLots();
-  const phones = await readPhones();
-  if (phones.length === 0) {
-    await send(chatId, `Chưa có máy nào hết á 😝`, { reply_markup: leftKb() });
-    return;
-  }
-
-  const lotMap = new Map(lots.map((l) => [l.lot, l]));
-  const sorted = [...phones].sort((a, b) => (a.phone_id < b.phone_id ? 1 : -1)).slice(0, 60);
-
-  const lines = sorted.map((p) => {
-    const l = lotMap.get(p.lot);
-    const lotNo = p.lot?.slice(2) || "";
-    const device = extractDeviceLabelFromLotNote(l?.note || p.note || "", l?.model || "");
-    const deviceText = device ? ` ${escapeHtml(device)}` : "";
-    const soldText = p.sold ? "✅ Đã bán" : "⏳ Còn giữ";
-    const result =
-      p.game === "hq" ? "🎁 HQ" : p.game === "qr" ? "🔳 QR" : p.game === "db" ? "⚽ DB" : p.status === "tach" ? "😵 Tạch" : p.status === "hue" ? "😌 Huề" : "🆕 New";
-    return `• <b>Mã ${escapeHtml(lotNo)}</b> - <code>${escapeHtml(p.phone_id)}</code> | ${result} | ${soldText} |${deviceText}`;
-  });
-
-  const html = `📋 <b>DANH SÁCH MÁY</b> (60 máy gần nhất)\n\n${lines.join("\n")}`;
-  await send(chatId, html, { reply_markup: leftKb() });
-}
-
-/* =========================
- * ✅ PHÂN TÍCH MUA MÁY (FIX ĐÚNG BẢN CHẤT)
+ * Machine Analysis (RIGHT MENU)
  * ========================= */
 function bar(pct, width = 18) {
-  const n = Math.max(0, Math.min(width, Math.round((pct / 100) * width)));
-  return "█".repeat(n) + " ".repeat(width - n);
+  const n = Math.round((pct / 100) * width);
+  return "█".repeat(n).padEnd(width, " ");
+}
+function pctOf(part, total) {
+  if (total <= 0) return 0;
+  return Math.round((part / total) * 100);
 }
 
-async function reportMachineAnalysis(chatId) {
+async function machineAnalysis(chatId) {
   const lots = await readLots();
   const phones = await readPhones();
-  const walletLogs = await readWalletLog();
   const payouts = await getMachinePayouts();
+  const logs = await readWalletLog();
 
-  const totalBuy = lots.reduce((a, b) => a + (b.total || 0), 0);
+  // Sold money by lot
+  const soldMoneyByLot = new Map();
+  for (const l of logs) {
+    if (l.type !== "machine_sell") continue;
+    if (l.ref_type !== "lot") continue;
+    const lot = String(l.ref_id || "").toUpperCase();
+    soldMoneyByLot.set(lot, (soldMoneyByLot.get(lot) || 0) + (l.amount || 0));
+  }
 
-  // total sell money
-  const totalSell = walletLogs
-    .filter((l) => l.type === "machine_sell" && l.ref_type === "lot")
-    .reduce((a, b) => a + (b.amount || 0), 0);
+  let totalBuy = 0;
+  let totalGame = 0;
+  let totalSell = 0;
 
-  // total game money (count ALL phones, include sold)
-  const hq = phones.filter((p) => p.game === "hq").length;
-  const qr = phones.filter((p) => p.game === "qr").length;
-  const db = phones.filter((p) => p.game === "db").length;
-  const totalGame = hq * payouts.hq + qr * payouts.qr + db * payouts.db;
+  let totalWin = 0,
+    totalLose = 0,
+    totalDraw = 0,
+    totalNew = 0,
+    totalSold = 0,
+    totalWinUnsold = 0;
 
-  // net
-  const netTam = totalGame - totalBuy;
-  const netThuc = totalGame + totalSell - totalBuy;
+  // per-lot stats (for optional detailed listing later)
+  const byLot = new Map();
 
-  // counts
+  for (const lot of lots) {
+    totalBuy += lot.total;
+
+    const ps = phones.filter((p) => p.lot === lot.lot);
+    const soldCount = ps.filter((p) => isSoldPhone(p)).length;
+    const newCount = ps.filter((p) => isNewPhone(p)).length;
+
+    const winPhones = ps.filter((p) => isWinPhone(p));
+    const losePhones = ps.filter((p) => isLosePhone(p));
+    const drawPhones = ps.filter((p) => isDrawPhone(p));
+
+    const hq = winPhones.filter((p) => String(p.game).toLowerCase() === "hq").length;
+    const qr = winPhones.filter((p) => String(p.game).toLowerCase() === "qr").length;
+    const db = winPhones.filter((p) => String(p.game).toLowerCase() === "db").length;
+
+    const gameRev = hq * payouts.hq + qr * payouts.qr + db * payouts.db;
+
+    const sellMoney = soldMoneyByLot.get(lot.lot) || 0;
+
+    const winUnsold = winPhones.filter((p) => !isSoldPhone(p)).length;
+    const remainUnsold = Math.max(0, ps.length - soldCount);
+
+    totalGame += gameRev;
+    totalSell += sellMoney;
+
+    totalWin += winPhones.length;
+    totalLose += losePhones.length;
+    totalDraw += drawPhones.length;
+    totalNew += newCount;
+    totalSold += soldCount;
+    totalWinUnsold += winUnsold;
+
+    byLot.set(lot.lot, {
+      lot,
+      counts: {
+        win: winPhones.length,
+        lose: losePhones.length,
+        draw: drawPhones.length,
+        new: newCount,
+        sold: soldCount,
+        winUnsold,
+        remainUnsold,
+        hq,
+        qr,
+        db,
+      },
+      money: { buy: lot.total, game: gameRev, sell: sellMoney, thu: gameRev + sellMoney },
+    });
+  }
+
+  const totalThu = totalGame + totalSell;
+  const loiConLai = totalThu - totalBuy;
+
   const totalPhones = phones.length || 0;
-  const tach = phones.filter((p) => p.status === "tach").length;
-  const hue = phones.filter((p) => p.status === "hue").length;
-  const neu = phones.filter((p) => p.status === "new").length;
-
-  const profit = hq + qr + db; // profit machines
-  const sold = phones.filter((p) => p.sold).length;
-
-  // holding profit = profit not sold
-  const holdingProfit = phones.filter((p) => (p.game === "hq" || p.game === "qr" || p.game === "db") && !p.sold).length;
-
-  const pct = (n) => (totalPhones > 0 ? Math.round((n / totalPhones) * 100) : 0);
-
-  // money bars scale by max
-  const maxMoney = Math.max(1, totalBuy, totalGame, totalSell);
-  const moneyPct = (x) => Math.round((x / maxMoney) * 100);
+  const pctNew = pctOf(totalNew, totalPhones);
+  const pctWin = pctOf(totalWin, totalPhones);
+  const pctLose = pctOf(totalLose, totalPhones);
+  const pctDraw = pctOf(totalDraw, totalPhones);
+  const pctSold = pctOf(totalSold, totalPhones);
 
   const html =
     `📊 <b>PHÂN TÍCH MUA MÁY</b>\n\n` +
-    `💳 <b>Đã bỏ ra mua máy:</b> <b>${moneyWON(totalBuy)}</b>\n` +
-    `💰 <b>Số tiền thu được:</b> <b>${moneyWON(totalGame + totalSell)}</b>\n` +
+    `💳 <b>Đã bỏ ra mua máy</b>: <b>${moneyWON(totalBuy)}</b>\n` +
+    `💰 <b>Số tiền thu được</b>: <b>${moneyWON(totalThu)}</b>\n` +
     `   • Thu game (HQ/QR/DB): <b>${moneyWON(totalGame)}</b>\n` +
     `   • Thu bán máy: <b>${moneyWON(totalSell)}</b>\n\n` +
-    `🧮 <b>Net tạm (game - mua):</b> <b>${moneyWON(netTam)}</b>\n` +
-    `🧮 <b>Net thực (game + bán - mua):</b> <b>${moneyWON(netThuc)}</b>\n\n` +
-    `Máy (tổng kết quả - <b>tính kể cả Sold</b>)\n` +
-    `• Lời: <b>${profit}</b> máy (HQ:${hq} / QR:${qr} / DB:${db})\n` +
-    `• Lỗ: <b>${tach}</b> máy\n` +
-    `• Huề: <b>${hue}</b> máy\n` +
-    `• Chưa làm (New): <b>${neu}</b> máy\n` +
-    `• Đã bán (Sold): <b>${sold}</b> máy\n` +
-    `• Lời còn giữ: <b>${holdingProfit}</b> máy\n\n` +
+    `🧮 <b>Net tạm (thu game)</b>: <b>${moneyWON(totalGame)}</b>\n` +
+    `🧮 <b>Net thực (game + bán)</b>: <b>${moneyWON(totalThu)}</b>\n\n` +
+    `💖 <b>Thu về</b> ${moneyWON(totalThu)} - <b>mua</b> ${moneyWON(totalBuy)} = <b>${moneyWON(loiConLai)}</b>\n\n` +
+    `Máy (tổng kết quả - tính kể cả Sold)\n` +
+    `• Lời: <b>${totalWin}</b> máy\n` +
+    `• Lỗ: <b>${totalLose}</b> máy\n` +
+    `• Huề: <b>${totalDraw}</b> máy\n` +
+    `• Chưa làm (New): <b>${totalNew}</b> máy\n` +
+    `• Đã bán (Sold): <b>${totalSold}</b> máy\n` +
+    `• Lời còn giữ: <b>${totalWinUnsold}</b> máy chưa bán\n\n` +
     `📌 <b>Biểu đồ trạng thái</b>\n` +
-    `New  : ${bar(pct(neu))} ${pct(neu)}% (${neu})\n` +
-    `Lời  : ${bar(pct(profit))} ${pct(profit)}% (${profit})\n` +
-    `Lỗ   : ${bar(pct(tach))} ${pct(tach)}% (${tach})\n` +
-    `Huề  : ${bar(pct(hue))} ${pct(hue)}% (${hue})\n` +
-    `Sold : ${bar(pct(sold))} ${pct(sold)}% (${sold})\n\n` +
-    `💸 <b>Biểu đồ tiền</b>\n` +
-    `Bỏ ra (mua): ${bar(moneyPct(totalBuy))} ${moneyWON(totalBuy)}\n` +
-    `Thu game    : ${bar(moneyPct(totalGame))} ${moneyWON(totalGame)}\n` +
-    `Thu bán     : ${bar(moneyPct(totalSell))} ${moneyWON(totalSell)}\n\n` +
-    `<i>(HQ=${Math.round(payouts.hq / 1000)}k, QR=${Math.round(payouts.qr / 1000)}k, DB=${Math.round(payouts.db / 1000)}k chỉ dùng cho phân tích máy nha)</i>`;
+    `New  : ${bar(pctNew)} ${pctNew}% (${totalNew})\n` +
+    `Lời  : ${bar(pctWin)} ${pctWin}% (${totalWin})\n` +
+    `Lỗ   : ${bar(pctLose)} ${pctLose}% (${totalLose})\n` +
+    `Huề  : ${bar(pctDraw)} ${pctDraw}% (${totalDraw})\n` +
+    `Sold : ${bar(pctSold)} ${pctSold}% (${totalSold})\n\n` +
+    `💸 <b>TỔNG</b>\n` +
+    `• <b>TỔNG TIỀN MUA MÁY</b>: <b>${moneyWON(totalBuy)}</b>\n` +
+    `• <b>TỔNG THU VỀ</b>: <b>${moneyWON(totalThu)}</b>\n` +
+    `• <b>LỜI CÒN LẠI</b>: <b>${moneyWON(loiConLai)}</b>\n` +
+    `• <b>LỜI</b> ${pctWin}% | <b>LỖ</b> ${pctLose}%`;
 
   await send(chatId, html, { reply_markup: rightKb() });
 }
 
 /* =========================
- * Quick revenue
+ * List Lots (ALL / 20)
+ * ========================= */
+async function listLotsPretty(chatId, { limit = 20, all = false } = {}) {
+  const lots = await readLots();
+  const phones = await readPhones();
+  const payouts = await getMachinePayouts();
+  const logs = await readWalletLog();
+
+  if (lots.length === 0) {
+    await send(chatId, `Chưa có lô nào hết á 😝\nBấm <b>📱 Mua Máy (Lô)</b> để tạo lô nha~`, { reply_markup: leftKb() });
+    return;
+  }
+
+  const soldMoneyByLot = new Map();
+  for (const l of logs) {
+    if (l.type !== "machine_sell") continue;
+    if (l.ref_type !== "lot") continue;
+    const lot = String(l.ref_id || "").toUpperCase();
+    soldMoneyByLot.set(lot, (soldMoneyByLot.get(lot) || 0) + (l.amount || 0));
+  }
+
+  const sorted = [...lots].sort((a, b) => (a.ts < b.ts ? 1 : -1));
+  const slice = all ? sorted : sorted.slice(0, limit);
+
+  const lines = slice.map((l) => {
+    const ps = phones.filter((p) => p.lot === l.lot);
+
+    const soldCount = ps.filter((p) => isSoldPhone(p)).length;
+    const remainUnsold = Math.max(0, ps.length - soldCount);
+
+    const winPhones = ps.filter((p) => isWinPhone(p));
+    const losePhones = ps.filter((p) => isLosePhone(p));
+    const drawPhones = ps.filter((p) => isDrawPhone(p));
+    const newPhones = ps.filter((p) => isNewPhone(p));
+
+    const hq = winPhones.filter((p) => String(p.game).toLowerCase() === "hq").length;
+    const qr = winPhones.filter((p) => String(p.game).toLowerCase() === "qr").length;
+    const db = winPhones.filter((p) => String(p.game).toLowerCase() === "db").length;
+
+    const gameRev = hq * payouts.hq + qr * payouts.qr + db * payouts.db;
+
+    const soldMoney = soldMoneyByLot.get(l.lot) || 0;
+
+    const laiTam = gameRev - l.total;
+    const laiThuc = gameRev + soldMoney - l.total;
+
+    const winUnsold = winPhones.filter((p) => !isSoldPhone(p)).length;
+
+    return (
+      `• <b>${escapeHtml(l.lot)}</b>: Mua <code>${l.qty}</code> máy <b>${escapeHtml(l.model)}</b> | Tổng <b>${moneyWON(l.total)}</b> | Ví <code>${escapeHtml(String(l.wallet || "").toUpperCase())}</code>\n\n` +
+      `  Trạng thái: Lời <b>${winPhones.length}</b> máy (HQ:${hq} / QR:${qr} / DB:${db}) / Huề <b>${drawPhones.length}</b> / Lỗ <b>${losePhones.length}</b> / New <b>${newPhones.length}</b> / Sold <b>${soldCount}</b>\n` +
+      `  Lời còn giữ: <b>${winUnsold}</b> máy | Còn lại: <b>${remainUnsold}</b> máy chưa bán\n\n` +
+      `  Tổng thu game: <b>${moneyWON(gameRev)}</b>\n` +
+      `  Lãi tạm: <b>${moneyWON(gameRev)}</b> - <b>${moneyWON(l.total)}</b> = <b>${moneyWON(laiTam)}</b>\n` +
+      `  Đã bán: <b>${moneyWON(soldMoney)}</b>\n` +
+      `  Lãi thực: <b>${moneyWON(gameRev)}</b> + <b>${moneyWON(soldMoney)}</b> - <b>${moneyWON(l.total)}</b> = <b>${moneyWON(laiThuc)}</b>`
+    );
+  });
+
+  const title = all ? "🧪 <b>DANH SÁCH LÔ MÁY</b> (Tất cả)\n\n" : `🧪 <b>DANH SÁCH LÔ MÁY</b> (20 lô gần nhất)\n\n`;
+  await send(chatId, title + lines.join("\n\n"), { reply_markup: leftKb() });
+}
+
+/* =========================
+ * List Phones (Menu Left)
+ * ========================= */
+async function listPhonesPretty(chatId) {
+  const lots = await readLots();
+  const phones = await readPhones();
+
+  if (phones.length === 0) {
+    await send(chatId, `Chưa có máy nào hết á 😝`, { reply_markup: leftKb() });
+    return;
+  }
+
+  const lotMap = new Map();
+  for (const l of lots) lotMap.set(l.lot, l);
+
+  // group by lot
+  const groups = new Map();
+  for (const p of phones) {
+    const k = p.lot || "UNKNOWN";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p);
+  }
+
+  const lotKeys = [...groups.keys()].sort((a, b) => (a < b ? 1 : -1)).slice(0, 30); // limit to avoid spam
+
+  const block = lotKeys.map((lotCode) => {
+    const ps = groups.get(lotCode) || [];
+    const l = lotMap.get(lotCode);
+
+    const soldCount = ps.filter((p) => isSoldPhone(p)).length;
+    const remain = Math.max(0, ps.length - soldCount);
+
+    const lines = ps.slice(0, 25).map((p) => {
+      const st = normStatus(p);
+      const sold = isSoldPhone(p) ? "✅ ĐÃ BÁN" : "⏳ CHƯA BÁN";
+      let label = "New";
+      if (st === "win") label = `Lời (${String(p.game || "").toUpperCase()})`;
+      if (st === "lose") label = "Lỗ (Tạch)";
+      if (st === "draw") label = "Huề";
+      return `• <code>${escapeHtml(p.phone_id)}</code>: <b>${escapeHtml(label)}</b> | ${sold}`;
+    });
+
+    return (
+      `📦 <b>${escapeHtml(lotCode)}</b>${l?.note ? ` (<i>${escapeHtml(l.note)}</i>)` : ""}\n` +
+      `Đã bán: <b>${soldCount}</b> | Còn lại: <b>${remain}</b> máy chưa bán\n` +
+      lines.join("\n")
+    );
+  });
+
+  await send(chatId, `🧾 <b>DANH SÁCH MÁY</b> (gần nhất)\n\n${block.join("\n\n")}`, { reply_markup: leftKb() });
+}
+
+/* =========================
+ * Quick revenue (DOANH THU CHÍNH)
  * ========================= */
 function detectGameFromText(normText) {
   const t = ` ${normText} `;
@@ -1103,6 +1149,20 @@ async function resetAllData() {
 }
 
 /* =========================
+ * Sessions
+ * ========================= */
+const sessions = new Map();
+function setSession(chatId, sess) {
+  sessions.set(String(chatId), sess);
+}
+function getSession(chatId) {
+  return sessions.get(String(chatId));
+}
+function clearSession(chatId) {
+  sessions.delete(String(chatId));
+}
+
+/* =========================
  * Help
  * ========================= */
 function helpText() {
@@ -1111,15 +1171,16 @@ function helpText() {
     `✅ <b>Mua lô</b> (tiền là <b>TỔNG</b>):\n` +
     `• <code>mua 3ss 50k</code>\n` +
     `• <code>mua ip 35k uri</code>\n\n` +
+    `Ví tắt: <code>hana/hn</code> | <code>uri</code> | <code>kt</code> | <code>tm</code>\n\n` +
     `✅ <b>Chốt lô</b>:\n` +
     `• <code>ma01 hq1 tach2</code>\n` +
-    `• <code>ma01 qr2</code>\n` +
-    `• <code>ma01 loi 1</code> (thiếu game sẽ hỏi lại)\n\n` +
+    `• <code>ma 02 qr1 lo2</code>\n` +
+    `• <code>ma01 db1 hue1 tach1</code>\n\n` +
     `✅ <b>Bán</b> (tiền là <b>TỔNG</b>):\n` +
     `• <code>ban 2 ss 50k ma01 uri</code>\n\n` +
-    `✅ <b>Thu nhanh (doanh thu chính)</b>:\n` +
+    `✅ <b>Thu doanh thu chính</b>:\n` +
     `• <code>db 100k</code> / <code>hq 200k</code> / <code>qr 57k</code> / <code>them 0.5k</code>\n\n` +
-    `<i>Tip:</i> Bạn gõ tắt + không dấu thoải mái, mình trả lời cho bạn có dấu cho dễ đọc nè 😚`
+    `<i>Tip:</i> Bạn gõ không dấu thoải mái, bot trả lời có dấu cho dễ đọc 😚`
   );
 }
 
@@ -1147,7 +1208,7 @@ async function handleSessionInput(chatId, userName, text) {
   if (sess.flow === "buy_lot" && sess.step === "sentence") {
     const parsed = parseBuySentence(text);
     if (!parsed || parsed.incomplete) {
-      await send(chatId, `Bạn gõ kiểu: <code>mua 3ss 50k</code> / <code>mua ip 35k uri</code> nha~`, { reply_markup: leftKb() });
+      await send(chatId, `Bạn gõ kiểu: <code>mua 3ss 50k</code> / <code>mua lg35k hn</code> nha~`, { reply_markup: leftKb() });
       return true;
     }
     sess.data = parsed;
@@ -1155,9 +1216,10 @@ async function handleSessionInput(chatId, userName, text) {
     if (parsed.wallet) {
       sess.step = "note";
       setSession(chatId, sess);
+      // nếu bạn không nhập model thì không cần phản hồi model (nhưng code bạn đang tự detect model, giữ logic cũ)
       await send(
         chatId,
-        `Okie 😚 <b>Mua lô</b> <code>${parsed.qty}</code> máy <b>${escapeHtml(parsed.model)}</b>, tổng <b>${moneyWON(parsed.totalPrice)}</b>\nVí: <code>${escapeHtml(parsed.wallet.toUpperCase())}</code>\n\nNhập <i>note</i> (vd <b>Note4</b>) hoặc <code>-</code> để bỏ qua nha~`,
+        `Okie 😚 Mua lô <code>${parsed.qty}</code> máy <b>${escapeHtml(parsed.model)}</b>, tổng <b>${moneyWON(parsed.totalPrice)}</b>\nVí: <code>${escapeHtml(parsed.wallet.toUpperCase())}</code>\n\nNhập <i>note</i> (vd Note4) hoặc <code>-</code> để bỏ qua nha~`,
         { reply_markup: leftKb() }
       );
       return true;
@@ -1165,11 +1227,9 @@ async function handleSessionInput(chatId, userName, text) {
 
     sess.step = "wallet";
     setSession(chatId, sess);
-    await send(
-      chatId,
-      `Okie 😚 <b>Mua lô</b> <code>${parsed.qty}</code> máy <b>${escapeHtml(parsed.model)}</b>, tổng <b>${moneyWON(parsed.totalPrice)}</b>\n\nTính tiền <b>ví nào</b>? (<code>hana/uri/kt/tm</code>)`,
-      { reply_markup: leftKb() }
-    );
+    await send(chatId, `Okie 😚 Mua lô <code>${parsed.qty}</code> máy <b>${escapeHtml(parsed.model)}</b>, tổng <b>${moneyWON(parsed.totalPrice)}</b>\n\nTính tiền ví nào? (<code>hana/uri/kt/tm</code>)`, {
+      reply_markup: leftKb(),
+    });
     return true;
   }
 
@@ -1183,7 +1243,7 @@ async function handleSessionInput(chatId, userName, text) {
     sess.data.wallet = w;
     sess.step = "note";
     setSession(chatId, sess);
-    await send(chatId, `Nhập <i>note</i> (vd <b>Note4</b>) hoặc <code>-</code> để bỏ qua nha~`, { reply_markup: leftKb() });
+    await send(chatId, `Nhập <i>note</i> (vd Note4) hoặc <code>-</code> để bỏ qua nha~`, { reply_markup: leftKb() });
     return true;
   }
 
@@ -1198,21 +1258,16 @@ async function handleSessionInput(chatId, userName, text) {
       total_price: Math.round(sess.data.totalPrice),
       wallet: sess.data.wallet,
       note: finalNote,
-      chatId,
     });
 
     clearSession(chatId);
-
-    const deviceLabel = extractDeviceLabelFromLotNote(finalNote, sess.data.model);
-    const noteLine = deviceLabel ? `Note: <b>${escapeHtml(deviceLabel)}</b>\n` : "";
 
     const html =
       `✅ <b>Xong rồi nè</b> 🥳\n` +
       `Tạo lô: <b>MÃ ${escapeHtml(r.lot.slice(2))}</b>\n` +
       `Mua: <b>${sess.data.qty}</b> máy <b>${escapeHtml(sess.data.model)}</b>\n` +
-      noteLine +
       `Tổng: <b>${moneyWON(Math.round(sess.data.totalPrice))}</b>\n` +
-      `Ví: <code>${escapeHtml(String(sess.data.wallet || "").toUpperCase())}</code>`;
+      `Ví: <b>${escapeHtml(String(sess.data.wallet || "").toUpperCase())}</b>`;
 
     await send(chatId, html, { reply_markup: leftKb() });
     return true;
@@ -1237,7 +1292,7 @@ async function handleSessionInput(chatId, userName, text) {
     setSession(chatId, sess);
     await send(
       chatId,
-      `Bạn đang <b>bán</b> lô <b>MÃ ${escapeHtml(parsed.lot.slice(2))}</b> x<code>${parsed.qty}</code>, tiền <b>${moneyWON(parsed.totalPrice)}</b>\n\nTiền về <b>ví nào</b>? (<code>hana/uri/kt/tm</code>)`,
+      `Mình hiểu bạn đang bán lô <b>MÃ ${escapeHtml(parsed.lot.slice(2))}</b> x<code>${parsed.qty}</code>, giá <b>${moneyWON(parsed.totalPrice)}</b>\n\nTiền về ví nào? (<code>hana/uri/kt/tm</code>)`,
       { reply_markup: leftKb() }
     );
     return true;
@@ -1285,41 +1340,35 @@ async function handleSessionInput(chatId, userName, text) {
       `✏️ <b>SỬA SỐ DƯ VÍ</b> <code>${escapeHtml(w.toUpperCase())}</code>\n\n` +
       `Cũ: <b>${moneyWON(r.current)}</b>\n` +
       `Mới: <b>${moneyWON(r.newBalance)}</b>\n` +
-      `Bù chênh: <code>${r.delta >= 0 ? "+" : ""}${moneyWON(r.delta)}</code>\n\n` +
-      `<i>(Bot ghi 1 dòng “adjust” để cân lại số dư nha 😚)</i>`;
+      `Bù chênh: <code>${r.delta >= 0 ? "+" : ""}${moneyWON(r.delta)}</code>`;
 
     await send(chatId, html, { reply_markup: rightKb() });
     return true;
   }
 
-  // REVENUE EDIT (MAIN)
-  if (sess.flow === "revenue_edit" && sess.step === "amount") {
+  // EDIT TOTAL REVENUE (doanh thu chính)
+  if (sess.flow === "total_revenue_edit" && sess.step === "amount") {
     const amt = extractMoneyFromText(text);
     if (amt == null) {
-      await send(chatId, `Nhập kiểu <code>120k</code> nha bạn iu~`, { reply_markup: rightKb() });
+      await send(chatId, `Nhập số kiểu <code>120k</code> nha~`, { reply_markup: rightKb() });
       return true;
     }
     clearSession(chatId);
 
-    // add adjust row to GAME_REVENUE
-    await addGameRevenue({ game: "all", type: "revenue_adjust", amount: amt, note: "SET_TOTAL", chatId, userName });
+    // Set total revenue by adding an adjust entry: we compute current total and add delta
+    const rows = await readGameRevenue();
+    const current = rows.reduce((a, b) => a + b.amount, 0);
+    const delta = Math.round(amt - current);
 
-    await send(chatId, `✅ <b>Đã cộng chỉnh doanh thu</b>: <b>${moneyWON(amt)}</b>`, { reply_markup: rightKb() });
-    return true;
-  }
-
-  // RESOLVE missing game
-  if (sess.flow === "resolve_need_game" && sess.step === "game") {
-    const n = normalizeForParse(text).trim();
-    const g = n.includes("hq") ? "hq" : n.includes("qr") ? "qr" : n.includes("db") ? "db" : "";
-    if (!g) {
-      await send(chatId, `Bạn chọn <code>hq</code> / <code>qr</code> / <code>db</code> nha~`, { reply_markup: leftKb() });
-      return true;
+    if (delta !== 0) {
+      await addGameRevenue({ game: "other", type: "adjust_total", amount: delta, note: `SET_TOTAL ${current} -> ${amt}`, chatId, userName });
     }
-    const { lot, count } = sess.data;
-    clearSession(chatId);
 
-    await applyLotResolve({ chatId, lot, segments: [{ kind: "loi", count, game: g }] });
+    await send(
+      chatId,
+      `✏️ <b>SỬA SỐ DƯ TỔNG DOANH THU</b>\n\nCũ: <b>${moneyWON(current)}</b>\nMới: <b>${moneyWON(amt)}</b>\nBù chênh: <b>${moneyWON(delta)}</b>`,
+      { reply_markup: rightKb() }
+    );
     return true;
   }
 
@@ -1369,11 +1418,11 @@ async function handleTextMessage(msg) {
   }
 
   // right menu
+  if (text === "📊 Phân Tích") return machineAnalysis(chatId);
   if (text === "💰 Tổng Doanh Thu") return reportTotalRevenue(chatId);
   if (text === "📅 Tháng Này") return reportThisMonth(chatId);
   if (text === "⏮️ Tháng Trước") return reportLastMonth(chatId);
   if (text === "📊 Thống Kê Game") return reportStatsGames(chatId);
-  if (text === "📊 Phân Tích") return reportMachineAnalysis(chatId);
   if (text === "💼 Xem Ví") return reportWallets(chatId);
   if (text === "📘 Hướng Dẫn") return send(chatId, helpText(), { reply_markup: rightKb() });
 
@@ -1383,9 +1432,9 @@ async function handleTextMessage(msg) {
     return;
   }
 
-  if (text === "✏️ Sửa Tổng Doanh Thu") {
-    setSession(chatId, { flow: "revenue_edit", step: "amount", data: {} });
-    await send(chatId, `✏️ <b>Sửa tổng doanh thu</b>\nNhập số tiền cần <b>cộng chỉnh</b> (vd <code>60k</code>) nha~`, { reply_markup: rightKb() });
+  if (text === "✏️ Sửa Số Dư Tổng Doanh Thu") {
+    setSession(chatId, { flow: "total_revenue_edit", step: "amount", data: {} });
+    await send(chatId, `✏️ <b>Sửa số dư tổng doanh thu</b>\nBạn nhập <b>tổng mới</b> (vd <code>500k</code>) nha~`, { reply_markup: rightKb() });
     return;
   }
 
@@ -1412,9 +1461,9 @@ async function handleTextMessage(msg) {
     await send(chatId, `💸 <b>Bán Máy</b>\nBạn gõ: <code>ban 2 ss 50k ma01 uri</code> nha~`, { reply_markup: leftKb() });
     return;
   }
-  if (text === "🧪 Kiểm Tra Máy (Tất cả)") return listLotsAll(chatId);
-  if (text === "🧪 20 Lô Gần Nhất") return listLots20(chatId);
-  if (text === "📋 Danh Sách Máy") return listPhonesPretty(chatId);
+  if (text === "🧪 Kiểm Tra Máy (Tất cả)") return listLotsPretty(chatId, { all: true });
+  if (text === "🧪 20 Lô Gần Nhất") return listLotsPretty(chatId, { all: false, limit: 20 });
+  if (text === "🧾 Danh Sách Máy") return listPhonesPretty(chatId);
 
   // session
   if (await handleSessionInput(chatId, userName, text)) return;
@@ -1422,15 +1471,7 @@ async function handleTextMessage(msg) {
   // resolve lot
   const lotCmd = parseLotResolve(text);
   if (lotCmd && lotCmd.segments && lotCmd.segments.length > 0) {
-    if (lotCmd.missingGame) {
-      // hỏi lại game
-      setSession(chatId, { flow: "resolve_need_game", step: "game", data: { lot: lotCmd.lot, count: lotCmd.missingGameCount || 1 } });
-      await send(chatId, `Bạn đang ghi <b>Lời</b> <code>${lotCmd.missingGameCount || 1}</code> máy.\nLà <b>HQ</b>, <b>QR</b> hay <b>DB</b> vậy bạn iu? (nhập <code>hq</code>/<code>qr</code>/<code>db</code>)`, {
-        reply_markup: leftKb(),
-      });
-      return;
-    }
-    await applyLotResolve({ chatId, lot: lotCmd.lot, segments: lotCmd.segments });
+    await applyLotResolve({ chatId, userName, lot: lotCmd.lot, segments: lotCmd.segments });
     return;
   }
 
@@ -1444,13 +1485,13 @@ async function handleTextMessage(msg) {
     setSession(chatId, { flow: "sell", step: "wallet", data: sell });
     await send(
       chatId,
-      `Mình hiểu bạn đang <b>bán</b> lô <b>MÃ ${escapeHtml(sell.lot.slice(2))}</b> x<code>${sell.qty}</code> giá <b>${moneyWON(sell.totalPrice)}</b>\n\nTiền về ví nào? (<code>hana/uri/kt/tm</code>)`,
+      `Mình hiểu bạn đang bán lô <b>MÃ ${escapeHtml(sell.lot.slice(2))}</b> x<code>${sell.qty}</code> giá <b>${moneyWON(sell.totalPrice)}</b>\n\nTiền về ví nào? (<code>hana/uri/kt/tm</code>)`,
       { reply_markup: leftKb() }
     );
     return;
   }
 
-  // quick revenue (MAIN doanh thu)
+  // quick revenue (doanh thu chính)
   const norm = normalizeForParse(text);
   const game = detectGameFromText(norm);
   const amt = extractMoneyFromText(text);
@@ -1469,9 +1510,11 @@ async function handleTextMessage(msg) {
     if (buy && !buy.incomplete) {
       if (buy.wallet) {
         setSession(chatId, { flow: "buy_lot", step: "note", data: buy });
-        await send(chatId, `Okie 😚 <b>Mua lô</b> <code>${buy.qty}</code> máy <b>${escapeHtml(buy.model)}</b>, tổng <b>${moneyWON(buy.totalPrice)}</b>\nVí: <code>${escapeHtml(buy.wallet.toUpperCase())}</code>\nNhập note (vd <b>Note4</b>) hoặc <code>-</code> nha~`, {
-          reply_markup: leftKb(),
-        });
+        await send(
+          chatId,
+          `Okie 😚 Mua lô <code>${buy.qty}</code> máy <b>${escapeHtml(buy.model)}</b>, tổng <b>${moneyWON(buy.totalPrice)}</b>\nVí: <code>${escapeHtml(buy.wallet.toUpperCase())}</code>\nNhập note (vd Note4) hoặc <code>-</code> nha~`,
+          { reply_markup: leftKb() }
+        );
         return;
       }
       setSession(chatId, { flow: "buy_lot", step: "wallet", data: buy });
@@ -1483,11 +1526,7 @@ async function handleTextMessage(msg) {
   }
 
   // unknown
-  await send(
-    chatId,
-    `Nhập sai rồi bạn iu ơi ^^\nVào ➡️ <b>Menu</b> → <b>📘 Hướng Dẫn</b> nha~\n<i>(hoặc bật 🧠 Smart Parse để mình hiểu bạn hơn 😚)</i>`,
-    { reply_markup: mainKb(), __raw: true }
-  );
+  await send(chatId, `Nhập sai rồi bạn iu ơi ^^\nVào ➡️ <b>Menu</b> → <b>📘 Hướng Dẫn</b> nha~`, { reply_markup: mainKb(), __raw: true });
 }
 
 /* =========================
