@@ -9,7 +9,7 @@ import cron from "node-cron";
  * ENV
  * ========================= */
 const VERSION =
-  "LOT-MAxx-SMARTPARSE-WALLET-SELL-CUTE-HTML | SPEC-V5:RESET+SUA+RENAME+TEMPLOSS-CASHFLOW";
+  "LOT-MAxx-SMARTPARSE-WALLET-SELL-CUTE-HTML | SPEC-V6:RESET+SUA+RENAME+TEMPLOSS(CASHFLOW)+MENU_BTNS+PARSE(3tach)";
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_APPLICATION_CREDENTIALS =
@@ -104,6 +104,8 @@ function leftKb() {
     [{ text: "🧪 Kiểm Tra Máy (Tất cả)" }, { text: "🧪 20 Lô Gần Nhất" }],
     [{ text: "📋 Danh Sách Máy" }],
     [{ text: "📊 Phân Tích Mua Máy" }],
+    // ✅ NEW MENU BUTTONS
+    [{ text: "♻️ Reset Lô" }, { text: "✏️ Sửa Lô / Đổi Mã" }],
     [{ text: "⚽ Thu Đá Bóng" }, { text: "🎁 Thu Hộp Quà" }],
     [{ text: "🔳 Thu QR" }, { text: "➕ Thu Khác" }],
   ]);
@@ -529,7 +531,9 @@ async function renameLotEverywhere(oldLot, newLot) {
       if (phoneLot !== oldLot) continue;
 
       const oldId = String(rows[i][0] || "").trim();
-      const suffix = oldId.startsWith(oldLot + "-") ? oldId.slice((oldLot + "-").length) : oldId.split("-").slice(1).join("-");
+      const suffix = oldId.startsWith(oldLot + "-")
+        ? oldId.slice((oldLot + "-").length)
+        : oldId.split("-").slice(1).join("-");
       const newId = `${newLot}-${suffix}`;
 
       const rowNumber = i + 2;
@@ -639,7 +643,7 @@ function parseSellSentence(text) {
 }
 
 /* =========================
- * Resolve lot parsing (ma01 hq1 tach2)
+ * Resolve lot parsing (ma01 hq1 tach2 / ma01 3 tach)
  * ========================= */
 function explodeCompactToken(tk) {
   const m = tk.match(/^(hq|qr|db|tach|tạch|chet|tac|hue|huề|hoa)(\d+)$/);
@@ -647,6 +651,7 @@ function explodeCompactToken(tk) {
   return [m[1], m[2]];
 }
 
+// ✅ FIX: support "3 tach" / "2 hq" (number BEFORE keyword)
 function parseLotResolve(text) {
   const norm = normalizeForParse(text);
   const lot = parseLotCode(text);
@@ -659,31 +664,77 @@ function parseLotResolve(text) {
   let missingGame = false;
   let missingGameCount = 0;
 
+  const isGameWord = (x) => x === "hq" || x === "qr" || x === "db";
+  const isAnWord = (x) => x === "loi" || x === "lai" || x === "an" || x === "duoc" || x === "ok";
+  const isTachWord = (x) => x === "tach" || x === "tạch" || x === "chet" || x === "tac";
+  const isHueWord = (x) => x === "hue" || x === "huề" || x === "hoa";
+  const clampCount = (n) => Math.max(0, Math.min(50, Number(n) || 0));
+
   let i = 0;
   while (i < tokens.length) {
-    const tk = tokens[i];
+    let tk = tokens[i];
 
-    const isGame = tk === "hq" || tk === "qr" || tk === "db";
-    if (isGame) {
+    // ✅ NEW: "3 tach" / "2 hq" / "4 hue" / "3 an hq"
+    if (tk && /^\d+$/.test(tk) && i + 1 < tokens.length) {
+      const n = clampCount(tk);
+      const next = tokens[i + 1];
+
+      if (isGameWord(next)) {
+        segments.push({ kind: "an", count: n, game: next });
+        i += 2;
+        continue;
+      }
+
+      if (isTachWord(next)) {
+        segments.push({ kind: "tach", count: n, game: "" });
+        i += 2;
+        continue;
+      }
+
+      if (isHueWord(next)) {
+        segments.push({ kind: "hue", count: n, game: "" });
+        i += 2;
+        continue;
+      }
+
+      if (isAnWord(next)) {
+        const g = tokens[i + 2] || "";
+        if (isGameWord(g)) {
+          segments.push({ kind: "an", count: n, game: g });
+          i += 3;
+          continue;
+        } else {
+          missingGame = true;
+          missingGameCount += n;
+          segments.push({ kind: "an", count: n, game: "" });
+          i += 2;
+          continue;
+        }
+      }
+      // else fall through
+    }
+
+    // existing: "hq 2" or "hq2"
+    if (isGameWord(tk)) {
       let count = 1;
-      if (i + 1 < tokens.length && tokens[i + 1].match(/^\d+$/)) {
-        count = Number(tokens[i + 1]) || 1;
+      if (i + 1 < tokens.length && /^\d+$/.test(tokens[i + 1])) {
+        count = clampCount(tokens[i + 1]);
         i += 2;
       } else i += 1;
-      segments.push({ kind: "an", count: Math.max(0, Math.min(50, count)), game: tk });
+      segments.push({ kind: "an", count, game: tk });
       continue;
     }
 
-    const isAn = tk === "loi" || tk === "lai" || tk === "an" || tk === "duoc" || tk === "ok";
-    const isTach = tk === "tach" || tk === "tạch" || tk === "chet" || tk === "tac";
-    const isHue = tk === "hue" || tk === "huề" || tk === "hoa";
+    const isAn = isAnWord(tk);
+    const isTach = isTachWord(tk);
+    const isHue = isHueWord(tk);
 
     if (isAn || isTach || isHue) {
       const kind = isAn ? "an" : isTach ? "tach" : "hue";
       let count = 1;
 
-      if (i + 1 < tokens.length && tokens[i + 1].match(/^\d+$/)) {
-        count = Number(tokens[i + 1]) || 1;
+      if (i + 1 < tokens.length && /^\d+$/.test(tokens[i + 1])) {
+        count = clampCount(tokens[i + 1]);
         i += 2;
       } else i += 1;
 
@@ -692,7 +743,7 @@ function parseLotResolve(text) {
       let game = "";
       if (kind === "an") {
         const next = tokens[i] || "";
-        if (next === "hq" || next === "qr" || next === "db") {
+        if (isGameWord(next)) {
           game = next;
           i++;
         } else {
@@ -701,7 +752,7 @@ function parseLotResolve(text) {
         }
       }
 
-      segments.push({ kind, count: Math.max(0, Math.min(50, count)), game });
+      segments.push({ kind, count, game });
       continue;
     }
 
@@ -729,7 +780,6 @@ function parseSuaCommand(text) {
   const norm = normalizeForParse(text);
   const t = norm.trim();
 
-  // starts with "sua"
   if (!t.startsWith("sua ")) return null;
 
   // rename: "sua ma01 ma09"
@@ -746,12 +796,17 @@ function parseSuaCommand(text) {
   const tt = ` ${t} `;
   if (tt.includes(" reset ") || tt.includes(" rs ") || tt.includes(" clear ")) return { type: "reset", lot };
 
-  // overwrite resolve: "sua ma01 hq1 tach2"
-  // Remove leading "sua " then parse resolve from remaining.
+  // overwrite resolve: "sua ma01 hq1 tach2" or "sua ma01 3 tach"
   const rest = t.replace(/^sua\s+/, "");
   const parsed = parseLotResolve(rest);
   if (parsed && parsed.lot && parsed.segments && parsed.segments.length > 0) {
-    return { type: "overwrite_resolve", lot: parsed.lot, segments: parsed.segments, missingGame: parsed.missingGame, missingGameCount: parsed.missingGameCount };
+    return {
+      type: "overwrite_resolve",
+      lot: parsed.lot,
+      segments: parsed.segments,
+      missingGame: parsed.missingGame,
+      missingGameCount: parsed.missingGameCount,
+    };
   }
 
   return null;
@@ -829,7 +884,7 @@ async function applyLotResolve({ chatId, lot, segments }) {
     return true;
   }
 
-  // Không pick trùng máy trong cùng 1 lần chốt
+  // pick: ưu tiên máy NEW; nếu hết thì pick máy chưa bán
   const used = new Set();
   const pick = (n) => {
     const pending = lotPhones.filter((p) => !used.has(p.phone_id) && normStatus(p.status) === "new");
@@ -908,7 +963,7 @@ async function sellFromLot({ chatId, lot, qty, totalPrice, wallet }) {
 
   await markPhonesSoldByIds(ids);
 
-  // Đã bán = WALLET_LOG type=machine_sell (không đổi trạng thái HQ/QR/DB/Tạch)
+  // Đã bán = WALLET_LOG type=machine_sell (không đổi HQ/QR/DB/Tạch)
   await addWalletLog({
     wallet,
     type: "machine_sell",
@@ -983,12 +1038,7 @@ async function computeLotSummary(lot, phones, walletLogs) {
   const lotPhones = phones.filter((p) => p.lot === lot.lot);
 
   const soldMoney = walletLogs
-    .filter(
-      (l) =>
-        l.type === "machine_sell" &&
-        l.ref_type === "lot" &&
-        String(l.ref_id || "").toUpperCase() === lot.lot
-    )
+    .filter((l) => l.type === "machine_sell" && l.ref_type === "lot" && String(l.ref_id || "").toUpperCase() === lot.lot)
     .reduce((a, b) => a + (b.amount || 0), 0);
 
   const soldCount = lotPhones.filter((p) => !!p.sold).length;
@@ -1010,7 +1060,7 @@ async function computeLotSummary(lot, phones, walletLogs) {
   const laiTam = gameMoney - (lot.total || 0);
   const laiThuc = gameMoney + soldMoney - (lot.total || 0);
 
-  // ✅ NEW SPEC: Tạm lỗ = max(0, tiền mua - (thu game + thu bán))
+  // ✅ SPEC: Tạm lỗ = max(0, tiền mua − (thu game + thu bán))
   const recovered = gameMoney + soldMoney;
   const tempLoss = Math.max(0, (lot.total || 0) - recovered);
 
@@ -1038,9 +1088,7 @@ async function listLotsAll(chatId) {
   const walletLogs = await readWalletLog();
 
   if (lots.length === 0) {
-    await send(chatId, `Chưa có lô nào hết á 😝\nBấm <b>📱 Mua Máy (Lô)</b> để tạo lô nha~`, {
-      reply_markup: leftKb(),
-    });
+    await send(chatId, `Chưa có lô nào hết á 😝\nBấm <b>📱 Mua Máy (Lô)</b> để tạo lô nha~`, { reply_markup: leftKb() });
     return;
   }
 
@@ -1076,9 +1124,7 @@ async function listLots20(chatId) {
   const walletLogs = await readWalletLog();
 
   if (lots.length === 0) {
-    await send(chatId, `Chưa có lô nào hết á 😝\nBấm <b>📱 Mua Máy (Lô)</b> để tạo lô nha~`, {
-      reply_markup: leftKb(),
-    });
+    await send(chatId, `Chưa có lô nào hết á 😝\nBấm <b>📱 Mua Máy (Lô)</b> để tạo lô nha~`, { reply_markup: leftKb() });
     return;
   }
 
@@ -1334,11 +1380,11 @@ function helpText() {
   return (
     `📘 <b>HƯỚNG DẪN</b> (WON ₩)\n\n` +
     `✅ <b>Mua lô</b> (tiền là <b>TỔNG</b>):\n` +
-    `• <code>mua 3ss 50k uri note4</code>\n` +
-    `• <code>mua ip 35k uri</code>\n\n` +
-    `✅ <b>Chốt lô</b>:\n` +
+    `• <code>mua 3ss 50k uri note4</code>\n\n` +
+    `✅ <b>Chốt lô</b> (đều OK):\n` +
     `• <code>ma01 hq1 tach2</code>\n` +
-    `• <code>ma01 qr2</code>\n\n` +
+    `• <code>ma01 tach 3</code>\n` +
+    `• <code>ma01 3 tach</code>\n\n` +
     `✅ <b>Reset lô</b>:\n` +
     `• <code>ma01 reset</code>\n\n` +
     `✅ <b>Sửa (overwrite)</b>:\n` +
@@ -1349,7 +1395,7 @@ function helpText() {
     `• <code>ban 2 ss 50k ma01 uri</code>\n\n` +
     `✅ <b>Thu nhanh (doanh thu chính)</b>:\n` +
     `• <code>db 100k</code> / <code>hq 200k</code> / <code>qr 57k</code> / <code>them 0.5k</code>\n\n` +
-    `<i>Tip:</i> Bạn gõ tắt + không dấu thoải mái 😚`
+    `<i>Tip:</i> Gõ không dấu thoải mái 😚`
   );
 }
 
@@ -1360,12 +1406,11 @@ async function handleSessionInput(chatId, userName, text) {
   const sess = getSession(chatId);
   if (!sess) return false;
 
+  // DANGEROUS RESET
   if (sess.flow === "reset" && sess.step === "pass") {
     clearSession(chatId);
     if (text !== RESET_PASS) {
-      await send(chatId, `Nhập sai rồi bạn iu ơi ^^  <i>(Nếu cần thì hỏi admin xin pass nha 😝)</i>`, {
-        reply_markup: rightKb(),
-      });
+      await send(chatId, `Nhập sai rồi bạn iu ơi ^^  <i>(Nếu cần thì hỏi admin xin pass nha 😝)</i>`, { reply_markup: rightKb() });
       return true;
     }
     await send(chatId, `⏳ <b>Đang xóa sạch dữ liệu...</b> (rụng tim nhẹ 😵‍💫)`, { reply_markup: rightKb() });
@@ -1378,9 +1423,7 @@ async function handleSessionInput(chatId, userName, text) {
   if (sess.flow === "buy_lot" && sess.step === "sentence") {
     const parsed = parseBuySentence(text);
     if (!parsed || parsed.incomplete) {
-      await send(chatId, `Bạn gõ kiểu: <code>mua 3ss 50k</code> / <code>mua ip 35k uri</code> nha~`, {
-        reply_markup: leftKb(),
-      });
+      await send(chatId, `Bạn gõ kiểu: <code>mua 3ss 50k uri note4</code> nha~`, { reply_markup: leftKb() });
       return true;
     }
 
@@ -1451,7 +1494,6 @@ async function handleSessionInput(chatId, userName, text) {
     }
     sess.data.wallet = w;
 
-    // nếu note đã có sẵn từ câu ban đầu => tạo luôn
     if (sess.data.note) {
       const parsed = sess.data;
       const finalNote = normalizeSpaces([parsed.model, parsed.note].filter(Boolean).join(" | "));
@@ -1614,7 +1656,7 @@ async function handleSessionInput(chatId, userName, text) {
     return true;
   }
 
-  // RESOLVE missing game
+  // RESOLVE missing game (normal + overwrite)
   if (sess.flow === "resolve_need_game" && sess.step === "game") {
     const n = normalizeForParse(text).trim();
     const g = n.includes("hq") ? "hq" : n.includes("qr") ? "qr" : n.includes("db") ? "db" : "";
@@ -1622,9 +1664,24 @@ async function handleSessionInput(chatId, userName, text) {
       await send(chatId, `Bạn chọn <code>hq</code> / <code>qr</code> / <code>db</code> nha~`, { reply_markup: leftKb() });
       return true;
     }
-    const { lot, count } = sess.data;
+
+    const data = sess.data || {};
     clearSession(chatId);
 
+    // overwrite: reset + apply all segments (fill empty-game "an" segments)
+    if (data.overwrite === true && data.lot && Array.isArray(data.segments)) {
+      const filled = data.segments.map((s) => {
+        if (s.kind === "an" && (!s.game || s.game === "")) return { ...s, game: g };
+        return s;
+      });
+      await resetLotResults(data.lot);
+      await applyLotResolve({ chatId, lot: data.lot, segments: filled });
+      return true;
+    }
+
+    // normal: just apply chosen game for missing count
+    const lot = data.lot;
+    const count = Number(data.count || 1) || 1;
     await applyLotResolve({ chatId, lot, segments: [{ kind: "an", count, game: g }] });
     return true;
   }
@@ -1715,9 +1772,7 @@ async function handleTextMessage(msg) {
   // left menu
   if (text === "📱 Mua Máy (Lô)") {
     setSession(chatId, { flow: "buy_lot", step: "sentence", data: {} });
-    await send(chatId, `📱 <b>Mua Máy (Lô)</b>\nBạn gõ: <code>mua 3ss 50k uri note4</code> hoặc <code>mua ip 35k uri</code> nha~`, {
-      reply_markup: leftKb(),
-    });
+    await send(chatId, `📱 <b>Mua Máy (Lô)</b>\nBạn gõ: <code>mua 3ss 50k uri note4</code> nha~`, { reply_markup: leftKb() });
     return;
   }
   if (text === "💸 Bán Máy") {
@@ -1729,6 +1784,24 @@ async function handleTextMessage(msg) {
   if (text === "🧪 20 Lô Gần Nhất") return listLots20(chatId);
   if (text === "📋 Danh Sách Máy") return listPhonesPretty(chatId);
   if (text === "📊 Phân Tích Mua Máy") return reportMachineAnalysis(chatId);
+
+  // ✅ NEW MENU BUTTONS (guide)
+  if (text === "♻️ Reset Lô") {
+    await send(
+      chatId,
+      `♻️ <b>Reset Lô</b>\nGõ: <code>ma01 reset</code>\n\nHoặc reset bằng SUA:\n<code>sua ma01 reset</code>`,
+      { reply_markup: leftKb() }
+    );
+    return;
+  }
+  if (text === "✏️ Sửa Lô / Đổi Mã") {
+    await send(
+      chatId,
+      `✏️ <b>Sửa Lô / Đổi Mã</b>\n\n• Sửa kết quả (reset trước rồi chốt lại):\n<code>sua ma01 hq1 tach2</code>\n\n• Đổi mã lô:\n<code>sua ma01 ma09</code>`,
+      { reply_markup: leftKb() }
+    );
+    return;
+  }
 
   // session
   if (await handleSessionInput(chatId, userName, text)) return;
@@ -1758,21 +1831,17 @@ async function handleTextMessage(msg) {
 
     if (sua.type === "overwrite_resolve") {
       if (sua.missingGame) {
-        // hỏi game rồi sẽ reset + apply
         setSession(chatId, {
           flow: "resolve_need_game",
           step: "game",
-          data: { lot: sua.lot, count: sua.missingGameCount || 1, __overwrite: true },
+          data: { lot: sua.lot, segments: sua.segments, overwrite: true },
         });
-        await send(
-          chatId,
-          `Bạn đang ghi <b>Ăn</b> <code>${sua.missingGameCount || 1}</code> máy.\nLà <b>HQ</b>, <b>QR</b> hay <b>DB</b> vậy bạn iu? (nhập <code>hq</code>/<code>qr</code>/<code>db</code>)`,
-          { reply_markup: leftKb() }
-        );
+        await send(chatId, `Bạn đang ghi <b>Ăn</b> mà chưa nói HQ/QR/DB.\nNhập <code>hq</code>/<code>qr</code>/<code>db</code> nha~`, {
+          reply_markup: leftKb(),
+        });
         return;
       }
 
-      // reset trước rồi apply
       await resetLotResults(sua.lot);
       await applyLotResolve({ chatId, lot: sua.lot, segments: sua.segments });
       return;
@@ -1796,13 +1865,11 @@ async function handleTextMessage(msg) {
       setSession(chatId, {
         flow: "resolve_need_game",
         step: "game",
-        data: { lot: lotCmd.lot, count: lotCmd.missingGameCount || 1 },
+        data: { lot: lotCmd.lot, count: lotCmd.missingGameCount || 1, overwrite: false },
       });
-      await send(
-        chatId,
-        `Bạn đang ghi <b>Ăn</b> <code>${lotCmd.missingGameCount || 1}</code> máy.\nLà <b>HQ</b>, <b>QR</b> hay <b>DB</b> vậy bạn iu? (nhập <code>hq</code>/<code>qr</code>/<code>db</code>)`,
-        { reply_markup: leftKb() }
-      );
+      await send(chatId, `Bạn đang ghi <b>Ăn</b> mà chưa nói HQ/QR/DB.\nNhập <code>hq</code>/<code>qr</code>/<code>db</code> nha~`, {
+        reply_markup: leftKb(),
+      });
       return;
     }
     await applyLotResolve({ chatId, lot: lotCmd.lot, segments: lotCmd.segments });
