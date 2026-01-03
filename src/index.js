@@ -9,7 +9,7 @@ import cron from "node-cron";
  * ENV
  * ========================= */
 const VERSION =
-  "LOT-MAxx-SMARTPARSE-WALLET-SELL-CUTE-HTML | SPEC-V3:NOTE-INLINE+NEW-FIX+AN-TAch+ANALYSIS-LEFT+ROI%";
+  "LOT-MAxx-SMARTPARSE-WALLET-SELL-CUTE-HTML | SPEC-V3:NOTE-INLINE+NEW-FIX+AN-TACH+ANALYSIS-LEFT+ROI%+PICK-NO-DUP";
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_APPLICATION_CREDENTIALS =
@@ -39,7 +39,6 @@ function nowIso() {
 function normalizeSpaces(s) {
   return String(s || "").replace(/\s+/g, " ").trim();
 }
-
 function cuteifyHtml(text) {
   const tails = [" 😚", " 🫶", " ✨", " ^^", " 😝", " 🤭", " 💖"];
   let s = String(text ?? "");
@@ -529,7 +528,6 @@ function parseBuySentence(text) {
 
   // ✅ NOTE: nếu người dùng gõ note phía sau thì giữ lại
   let note = raw;
-
   note = note.replace(/\bmua\b/gi, " ");
   note = note.replace(/\b\d+\s*(ss|ip|lg)\b/gi, " ");
   note = note.replace(/\bss\b|\bsamsung\b|\bip\b|\biphone\b|\blg\b/gi, " ");
@@ -537,7 +535,6 @@ function parseBuySentence(text) {
   note = note.replace(/₩\s*\d[\d,]*(?:\.\d+)?\s*k?/gi, " ");
   note = note.replace(/\b\d[\d,]*(?:\.\d+)?\s*k\b/gi, " ");
   note = note.replace(/\b\d[\d,]*(?:\.\d+)?\b/gi, " ");
-
   note = normalizeSpaces(note);
 
   return { qty, model, totalPrice, wallet, note };
@@ -701,7 +698,6 @@ function isNewPhone(p) {
   if (isProfitPhone(p)) return false;
   if (isLossPhone(p)) return false;
   if (isTiePhone(p)) return false;
-  // những thứ còn lại coi là chưa chốt
   return true;
 }
 
@@ -719,11 +715,14 @@ async function applyLotResolve({ chatId, lot, segments }) {
     return true;
   }
 
-  // chọn máy "new" trước, rồi tới máy chưa sold
+  // ✅ FIX DỨT ĐIỂM: không pick trùng máy trong cùng 1 lần chốt
+  const used = new Set();
   const pick = (n) => {
-    const pending = lotPhones.filter((p) => normStatus(p.status) === "new");
-    const pool = pending.length > 0 ? pending : lotPhones.filter((p) => !p.sold);
-    return pool.slice(0, n).map((p) => p.phone_id);
+    const pending = lotPhones.filter((p) => !used.has(p.phone_id) && normStatus(p.status) === "new");
+    const pool = pending.length > 0 ? pending : lotPhones.filter((p) => !used.has(p.phone_id) && !p.sold);
+    const ids = pool.slice(0, n).map((p) => p.phone_id);
+    ids.forEach((id) => used.add(id));
+    return ids;
   };
 
   let hqCount = 0,
@@ -1058,7 +1057,7 @@ async function reportMachineAnalysis(chatId) {
   const totalGame = hq * payouts.hq + qr * payouts.qr + db * payouts.db;
 
   const totalBack = totalGame + totalSell;
-  const net = totalBack - totalBuy; // lời/lỗ theo tiền
+  const net = totalBack - totalBuy;
 
   const totalPhones = phones.length || 0;
   const tach = phones.filter((p) => isLossPhone(p)).length;
@@ -1067,7 +1066,7 @@ async function reportMachineAnalysis(chatId) {
   const neu = phones.filter((p) => isNewPhone(p)).length;
   const sold = phones.filter((p) => !!p.sold).length;
 
-  // ROI%: lời% = net/totalBuy nếu net>=0, lỗ% = abs(net)/totalBuy nếu net<0
+  // ROI% theo tiền
   const base = Math.max(1, totalBuy);
   const loiPct = net >= 0 ? Math.round((net / base) * 100) : 0;
   const loPct = net < 0 ? Math.round((Math.abs(net) / base) * 100) : 0;
@@ -1164,7 +1163,6 @@ async function handleSessionInput(chatId, userName, text) {
   const sess = getSession(chatId);
   if (!sess) return false;
 
-  // RESET
   if (sess.flow === "reset" && sess.step === "pass") {
     clearSession(chatId);
     if (text !== RESET_PASS) {
