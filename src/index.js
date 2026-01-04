@@ -2360,3 +2360,85 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ BOT READY on ${PORT} | ${VERSION}`);
 });
+/* =========================
+ * SIMPLE DELETE MAIL (PASTE AT END – NO TOUCH OLD CODE)
+ * ========================= */
+
+// Parse: "xoa mail xxx@" hoặc "xoa mail MAIL03"
+function __parseDeleteMail(text) {
+  const raw = String(text || "").trim();
+  const norm = normalizeForParse(raw);
+
+  if (!norm.startsWith("xoa ")) return null;
+
+  // xoa mail MAIL03
+  let m = norm.match(/^xoa\s+mail\s+(mail\d+)\b/i);
+  if (m) return { mode: "id", id: m[1].toUpperCase() };
+
+  // xoa mail xxx@
+  m = raw.match(/^xoa\s+mail\s+(\S+)/i);
+  if (m && m[1].includes("@")) {
+    return { mode: "mail", mail: normalizeMailFull(m[1]) };
+  }
+
+  return null;
+}
+
+// Xóa dòng mail gần nhất theo mail
+async function __deleteMailByMail(mail) {
+  const rows = await readMailLog();
+  const target = normalizeMailFull(mail);
+
+  const list = rows
+    .filter(r => normalizeMailFull(r.mail) === target)
+    .sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
+
+  const last = list[list.length - 1];
+  if (!last) return false;
+
+  await updateValues(
+    `MAIL_LOG!A${last.rowNumber}:G${last.rowNumber}`,
+    [["", "", "", "", "", "", ""]]
+  );
+  return true;
+}
+
+// Xóa dòng mail theo ID
+async function __deleteMailById(id) {
+  const rows = await readMailLog();
+  const row = rows.find(r => String(r.id || "").toUpperCase() === id);
+  if (!row) return false;
+
+  await updateValues(
+    `MAIL_LOG!A${row.rowNumber}:G${row.rowNumber}`,
+    [["", "", "", "", "", "", ""]]
+  );
+  return true;
+}
+
+// AUTO-HOOK: chỉ cần dán cuối file, bot tự hiểu
+const __oldHandleTextMessage = handleTextMessage;
+handleTextMessage = async function (msg) {
+  const chatId = msg?.chat?.id;
+  const text = String(msg?.text || "").trim();
+
+  if (chatId && text) {
+    const del = __parseDeleteMail(text);
+    if (del) {
+      let ok = false;
+      if (del.mode === "id") ok = await __deleteMailById(del.id);
+      else ok = await __deleteMailByMail(del.mail);
+
+      if (!ok) {
+        await send(chatId, `🥺 Không tìm thấy mail để xóa nha`, { reply_markup: leftKb() });
+        return;
+      }
+
+      await send(chatId, `🗑️ Đã xóa mail rồi nha~`, { reply_markup: leftKb() });
+      return;
+    }
+  }
+
+  // fallback về handler cũ
+  return __oldHandleTextMessage(msg);
+};
