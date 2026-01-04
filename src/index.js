@@ -2348,3 +2348,79 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ BOT READY on ${PORT} | ${VERSION}`);
 });
+/***********************
+ * OVERRIDE MAIL MODULE
+ * DÁN CUỐI FILE LÀ XONG
+ ***********************/
+
+// 1) Override DANH SÁCH ĐÃ MỜI (kèm Mail + Note)
+globalThis.sendDanhSachDaMoi = async function sendDanhSachDaMoi(chatId) {
+  const rows = await readMailLog();
+  await autoDoneIfNeeded(rows);
+
+  // sort cũ -> mới
+  rows.sort((a, b) => (String(a.created_at || "") > String(b.created_at || "") ? 1 : -1));
+
+  const tach = rows.filter((r) => String(r.result || "").toUpperCase() === "TACH");
+  const ok = rows.filter((r) => String(r.result || "").toUpperCase() !== "TACH");
+
+  const out = [];
+  out.push(`📋 <b>DANH SÁCH ĐÃ MỜI</b>\n`);
+
+  out.push(`❌ <b>TẠCH</b>`);
+  if (tach.length === 0) out.push(`<i>(trống)</i>`);
+  for (const r of tach) {
+    const nm = titleCaseVi(r.name);
+    const dt = (globalThis.dayjs && dayjs(r.created_at).isValid()) ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
+    const mailFull = String(r.mail || "").trim(); // ✅ full mail luôn
+    const note = normalizeSpaces(String(r.note || ""));
+    const noteTxt = note ? ` / Note: ${escapeHtml(note)}` : "";
+    out.push(
+      `• Mời <b>A. ${escapeHtml(nm)}</b> / Mail: <b>${escapeHtml(mailFull)}</b>${noteTxt} / ${escapeHtml(dt)}`
+    );
+  }
+
+  out.push(`\n✅ <b>OK</b>`);
+  if (ok.length === 0) out.push(`<i>(trống)</i>`);
+  for (const r of ok) {
+    const nm = titleCaseVi(r.name);
+    const dt = (globalThis.dayjs && dayjs(r.created_at).isValid()) ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
+    const left = daysLeftForOk(r.created_at);
+    const resTxt = prettyResultText(String(r.result || "").toUpperCase());
+    const mailFull = String(r.mail || "").trim(); // ✅ full mail luôn
+    const note = normalizeSpaces(String(r.note || ""));
+    const noteTxt = note ? ` / Note: ${escapeHtml(note)}` : "";
+    out.push(
+      `• Mời <b>A. ${escapeHtml(nm)}</b> / Mail: <b>${escapeHtml(mailFull)}</b>${noteTxt} / ${escapeHtml(
+        resTxt
+      )} / ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh) 🫶`
+    );
+  }
+
+  await send(chatId, out.join("\n"), { reply_markup: leftKb() });
+};
+
+// 2) Override MENU "Mail" (in full mail có domain, không còn xx@)
+globalThis.sendMailOnlyList = async function sendMailOnlyList(chatId) {
+  const rows = await readMailLog();
+
+  // sort cũ -> mới
+  rows.sort((a, b) => (String(a.created_at || "") > String(b.created_at || "") ? 1 : -1));
+
+  const seen = new Set();
+  const mails = [];
+
+  for (const r of rows) {
+    const full = String(r.mail || "").trim();
+    if (!full || !full.includes("@")) continue;
+
+    const key = full.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    // ✅ trả full mail có domain
+    mails.push(full);
+  }
+
+  await send(chatId, mails.join("\n") || "(trống)", { reply_markup: leftKb(), __raw: true });
+};
