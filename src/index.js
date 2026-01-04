@@ -9,7 +9,7 @@ import cron from "node-cron";
  * ENV
  * ========================= */
 const VERSION =
-  "LOT-MAxx-SMARTPARSE-WALLET-SELL-CUTE-HTML | SPEC-V6:RESET+SUA+RENAME+TEMPLOSS(CASHFLOW)+MENU_BTNS+PARSE(3tach)";
+  "LOT-MAxx-SMARTPARSE-WALLET-SELL-CUTE-HTML | SPEC-V6 + MAIL_LOG(VN+NOACCENTS) + MENU(MAIL+DSMOI)";
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
 const GOOGLE_APPLICATION_CREDENTIALS =
@@ -50,6 +50,23 @@ function cuteifyHtml(text) {
     s += tails[idx];
   }
   return s;
+}
+function titleCaseVi(s) {
+  const t = normalizeSpaces(String(s || ""));
+  if (!t) return "";
+  return t
+    .split(" ")
+    .map((w) => {
+      if (!w) return w;
+      // keep dots like "A." intact
+      if (w.endsWith(".")) {
+        const core = w.slice(0, -1);
+        if (!core) return w;
+        return core.charAt(0).toUpperCase() + core.slice(1) + ".";
+      }
+      return w.charAt(0).toUpperCase() + w.slice(1);
+    })
+    .join(" ");
 }
 
 /* =========================
@@ -104,8 +121,9 @@ function leftKb() {
     [{ text: "🧪 Kiểm Tra Máy (Tất cả)" }, { text: "🧪 20 Lô Gần Nhất" }],
     [{ text: "📋 Danh Sách Máy" }],
     [{ text: "📊 Phân Tích Mua Máy" }],
-    // ✅ NEW MENU BUTTONS
     [{ text: "♻️ Reset Lô" }, { text: "✏️ Sửa Lô / Đổi Mã" }],
+    // ✅ MAIL FEATURE MENU
+    [{ text: "📋 Danh sách đã mời" }, { text: "📧 Mail" }],
     [{ text: "⚽ Thu Đá Bóng" }, { text: "🎁 Thu Hộp Quà" }],
     [{ text: "🔳 Thu QR" }, { text: "➕ Thu Khác" }],
   ]);
@@ -250,7 +268,6 @@ async function toggleSmartParse() {
  * Machine Analysis Payouts (ONLY FOR PHÂN TÍCH MÁY)
  * ========================= */
 async function getMachinePayouts() {
-  // Thu game = HQ150k + QR57k + DB*100k
   const hq = parseMoney((await getSetting("MACHINE_PAYOUT_HQ")) || "150k") ?? 150000;
   const qr = parseMoney((await getSetting("MACHINE_PAYOUT_QR")) || "57k") ?? 57000;
   const db = parseMoney((await getSetting("MACHINE_PAYOUT_DB")) || "100k") ?? 100000;
@@ -398,7 +415,6 @@ async function addLot({ qty, model, total_price, wallet, note, chatId }) {
 
   await appendValues("LOTS!A1", [[lot, nowIso(), qty, model, total_price, unit, wallet, note || ""]]);
 
-  // mua máy => trừ ví
   await addWalletLog({
     wallet,
     type: "lot_buy",
@@ -411,7 +427,6 @@ async function addLot({ qty, model, total_price, wallet, note, chatId }) {
 
   for (let i = 1; i <= qty; i++) {
     const phone_id = `${lot}-${i}`;
-    // PHONES: A..G (H sold_flag, I sold_ts)
     await appendValues("PHONES!A1", [[phone_id, lot, nowIso(), unit, "new", "none", note || "", "", ""]]);
   }
 
@@ -484,7 +499,7 @@ async function markPhonesSoldByIds(ids) {
 }
 
 /* =========================
- * NEW: reset lot results + rename lot
+ * reset lot results + rename lot
  * ========================= */
 async function resetLotResults(lot) {
   lot = String(lot || "").trim().toUpperCase();
@@ -512,7 +527,6 @@ async function renameLotEverywhere(oldLot, newLot) {
   if (!lots.find((l) => l.lot === oldLot)) return { ok: false, reason: `Không thấy lô ${oldLot}` };
   if (lots.find((l) => l.lot === newLot)) return { ok: false, reason: `Mã ${newLot} đã tồn tại` };
 
-  // 1) LOTS: đổi cột A
   {
     const rows = await getValues("LOTS!A2:H");
     for (let i = 0; i < rows.length; i++) {
@@ -523,7 +537,6 @@ async function renameLotEverywhere(oldLot, newLot) {
     }
   }
 
-  // 2) PHONES: đổi lot (B) + đổi phone_id (A) theo prefix
   {
     const rows = await getValues("PHONES!A2:I");
     for (let i = 0; i < rows.length; i++) {
@@ -541,7 +554,6 @@ async function renameLotEverywhere(oldLot, newLot) {
     }
   }
 
-  // 3) WALLET_LOG: ref_id (F) nếu ref_type=lot và ref_id==oldLot
   {
     const rows = await getValues("WALLET_LOG!A2:H");
     for (let i = 0; i < rows.length; i++) {
@@ -1388,19 +1400,24 @@ function helpText() {
     `✅ <b>Reset lô</b>:\n` +
     `• <code>ma01 reset</code>\n\n` +
     `✅ <b>Sửa (overwrite)</b>:\n` +
-    `• <code>sua ma01 hq1 tach2</code> (reset trước rồi chốt lại)\n` +
+    `• <code>sua ma01 hq1 tach2</code>\n` +
     `• <code>sua ma01 reset</code>\n` +
-    `• <code>sua ma01 ma09</code> (đổi mã lô)\n\n` +
+    `• <code>sua ma01 ma09</code>\n\n` +
     `✅ <b>Bán</b> (tiền là <b>TỔNG</b>):\n` +
     `• <code>ban 2 ss 50k ma01 uri</code>\n\n` +
     `✅ <b>Thu nhanh (doanh thu chính)</b>:\n` +
     `• <code>db 100k</code> / <code>hq 200k</code> / <code>qr 57k</code> / <code>them 0.5k</code>\n\n` +
-    `<i>Tip:</i> Gõ không dấu thoải mái 😚`
+    `✅ <b>MAIL (mời mượn máy)</b>:\n` +
+    `• <code>A Bình minhtiktok@ hq</code>\n` +
+    `• <code>Abinh minhtiktok@ tạch</code>\n` +
+    `• <code>A Tiến minhtik@ 01079876999 db</code> (số phía sau là ghi chú)\n` +
+    `• Sửa: <code>sua A minhtiktok@ tach</code>\n\n` +
+    `<i>Tip:</i> Gõ có dấu hay không dấu đều hiểu 😚`
   );
 }
 
 /* =========================
- * SESSION handler
+ * SESSION handler (existing flows)
  * ========================= */
 async function handleSessionInput(chatId, userName, text) {
   const sess = getSession(chatId);
@@ -1651,7 +1668,6 @@ async function handleSessionInput(chatId, userName, text) {
     clearSession(chatId);
 
     await addGameRevenue({ game: "all", type: "revenue_adjust", amount: amt, note: "SET_TOTAL", chatId, userName });
-
     await send(chatId, `✅ <b>Đã cộng chỉnh doanh thu</b>: <b>${moneyWON(amt)}</b>`, { reply_markup: rightKb() });
     return true;
   }
@@ -1668,7 +1684,6 @@ async function handleSessionInput(chatId, userName, text) {
     const data = sess.data || {};
     clearSession(chatId);
 
-    // overwrite: reset + apply all segments (fill empty-game "an" segments)
     if (data.overwrite === true && data.lot && Array.isArray(data.segments)) {
       const filled = data.segments.map((s) => {
         if (s.kind === "an" && (!s.game || s.game === "")) return { ...s, game: g };
@@ -1679,7 +1694,6 @@ async function handleSessionInput(chatId, userName, text) {
       return true;
     }
 
-    // normal: just apply chosen game for missing count
     const lot = data.lot;
     const count = Number(data.count || 1) || 1;
     await applyLotResolve({ chatId, lot, segments: [{ kind: "an", count, game: g }] });
@@ -1690,9 +1704,322 @@ async function handleSessionInput(chatId, userName, text) {
 }
 
 /* =========================
+ * MAIL_LOG FEATURE (per spec)
+ * Sheet: MAIL_LOG columns:
+ * A id | B name | C mail | D result(HQ/QR/DB/TACH) | E note | F created_at | G status(ACTIVE/DONE)
+ * ========================= */
+
+// Always default after @ is gmail.com unless user typed another domain.
+// - "xxx@" => "xxx@gmail.com"
+// - "xxx"  => "xxx@gmail.com"
+// - "xxx@yahoo.com" => keep
+function normalizeMailFull(raw) {
+  const s = removeDiacritics(String(raw || "").trim().toLowerCase());
+  if (!s) return "";
+  if (!s.includes("@")) return `${s}@gmail.com`;
+  if (s.endsWith("@")) return `${s}gmail.com`;
+  return s;
+}
+
+// For menu "📧 Mail": want only localpart + "@", nothing else.
+// - gmail => "xxx@"
+// - other domain => keep full "xxx@yahoo.com" (still a mail)
+function toMailShortForCopy(full) {
+  const s = String(full || "").trim().toLowerCase();
+  if (!s.includes("@")) return "";
+  if (s.endsWith("@gmail.com")) return s.replace(/@gmail\.com$/i, "@");
+  return s;
+}
+
+function detectMailResultToken(normTk) {
+  const tk = normTk;
+  if (!tk) return "";
+  // tạch
+  if (tk === "tach" || tk === "tạch" || tk === "tac" || tk === "chet") return "TACH";
+  // qr
+  if (tk === "qr") return "QR";
+  // db / bd
+  if (tk === "db" || tk === "bd" || tk === "da" || tk === "bong" || tk === "dabong") return "DB";
+  // hq / hộp quà
+  if (tk === "hq" || tk === "hopqua" || tk === "hop" || tk === "qua" || tk === "hopqua") return "HQ";
+  return "";
+}
+
+function prettyResultText(result) {
+  if (result === "TACH") return "tạch";
+  if (result === "HQ") return "ok hộp quà";
+  if (result === "QR") return "ok QR";
+  if (result === "DB") return "ok đá bóng";
+  return "";
+}
+
+// Parse commands like:
+// "A bình Minhtiktop.v1@ Hq (ghi chú)"
+// "Abinh minhtiktok@ tạch ..."
+// "A tiến minhtik@ 0107... db"
+function parseMailLine(text) {
+  const raw = normalizeSpaces(String(text || ""));
+  if (!raw) return null;
+
+  const norm = normalizeForParse(raw);
+
+  // Accept "a ..." or "a..." or "a. ..."
+  if (!(norm === "a" || norm.startsWith("a ") || norm.startsWith("a.") || norm.startsWith("a," ) || norm.startsWith("a-") || norm.startsWith("a_") || norm.startsWith("a"))) {
+    return null;
+  }
+  // Must begin with an "a" marker (user's habit). To avoid accidentally matching other commands:
+  // require first char is 'a' (case-insensitive) and next char is space or letter/dot.
+  const firstChar = norm[0];
+  if (firstChar !== "a") return null;
+
+  // Tokenize from original (keep accents for name/note), but use normalized tokens for detection
+  const rawTokens = raw.split(/\s+/).filter(Boolean);
+  const normTokens = normalizeForParse(raw).split(/\s+/).filter(Boolean);
+
+  // Determine if first token is like "A" or "Abinh"
+  // Remove leading marker from first raw token if it's glued.
+  let startIdx = 0;
+  let firstRaw = rawTokens[0] || "";
+  let firstNorm = normTokens[0] || "";
+
+  // If first token is "A" or "A." => skip it
+  if (firstNorm === "a" || firstNorm === "a." || firstNorm === "a," ) {
+    startIdx = 1;
+  } else if (firstNorm.startsWith("a") && firstNorm.length > 1) {
+    // glued: "Abinh" => treat as name token "bình"
+    // raw token may be "Abinh" or "A.Bình"
+    const glued = firstRaw;
+    const gluedNorm = removeDiacritics(glued).toLowerCase();
+    // remove leading 'a' or 'a.' etc
+    const stripped = glued.replace(/^A[\.\,\-\_]?/i, "");
+    // Replace token 0 to stripped as name token, keep startIdx=1 after we push it
+    rawTokens[0] = stripped || glued; // fallback
+    normTokens[0] = gluedNorm.replace(/^a[\.\,\-\_]?/i, "") || gluedNorm;
+    startIdx = 0; // still process token0 as name
+  }
+
+  let nameParts = [];
+  let mailToken = "";
+  let result = "";
+  let noteParts = [];
+  let foundMail = false;
+
+  for (let i = startIdx; i < rawTokens.length; i++) {
+    const rt = rawTokens[i];
+    const nt = normTokens[i] || normalizeForParse(rt);
+
+    // mail detection: ANY token containing "@"
+    if (!foundMail && rt.includes("@")) {
+      mailToken = rt;
+      foundMail = true;
+      continue;
+    }
+
+    const res = detectMailResultToken(nt);
+    if (res) {
+      result = res;
+      continue;
+    }
+
+    if (!foundMail) {
+      nameParts.push(rt);
+    } else {
+      noteParts.push(rt);
+    }
+  }
+
+  const name = normalizeSpaces(nameParts.join(" "));
+  const mail = normalizeMailFull(mailToken);
+
+  if (!name || !mail || !result) return null;
+
+  const note = normalizeSpaces(noteParts.join(" "));
+  return { name, mail, result, note };
+}
+
+// "sua A minhtiktok@ tach (note?)"  OR "sua A ...@ hq"
+function parseMailEdit(text) {
+  const raw = normalizeSpaces(String(text || ""));
+  const norm = normalizeForParse(raw);
+  if (!norm.startsWith("sua ")) return null;
+
+  // remove "sua "
+  const restRaw = raw.slice(raw.toLowerCase().indexOf("sua") + 3).trim();
+  const restNorm = normalizeForParse(restRaw);
+
+  // allow "A ..." after sua
+  const parsed = parseMailLine(restRaw);
+  if (parsed) return parsed;
+
+  // also allow: "sua mail xxx@ hq ..."
+  if (restNorm.startsWith("mail ")) {
+    const tRaw = restRaw.replace(/^mail\s+/i, "");
+    // Fake an "A" prefix for reuse parser: need a name - but spec wants update by mail latest
+    // We'll parse mail + result + note, name is optional here.
+    const toks = tRaw.split(/\s+/).filter(Boolean);
+    let mailTk = "";
+    let result = "";
+    let note = "";
+    for (const tk of toks) {
+      const nt = normalizeForParse(tk);
+      if (!mailTk && tk.includes("@")) mailTk = tk;
+      const r = detectMailResultToken(nt);
+      if (r) result = r;
+      else if (mailTk) note += tk + " ";
+    }
+    mailTk = normalizeMailFull(mailTk);
+    note = normalizeSpaces(note);
+    if (!mailTk || !result) return null;
+    return { name: "", mail: mailTk, result, note };
+  }
+
+  return null;
+}
+
+async function nextMailId() {
+  const rows = await getValues("MAIL_LOG!A2:A");
+  let max = 0;
+  for (const r of rows) {
+    const m = String(r[0] || "").match(/^MAIL(\d+)$/i);
+    if (m) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n)) max = Math.max(max, n);
+    }
+  }
+  return "MAIL" + String(max + 1).padStart(2, "0");
+}
+
+async function addMailLog({ name, mail, result, note }) {
+  const id = await nextMailId();
+  await appendValues("MAIL_LOG!A1", [[id, name, mail, result, note || "", nowIso(), "ACTIVE"]]);
+  return id;
+}
+
+async function readMailLog() {
+  const rows = await getValues("MAIL_LOG!A2:G");
+  return rows
+    .filter((r) => r.some((c) => String(c || "").trim() !== ""))
+    .map((r, idx) => ({
+      rowNumber: idx + 2, // sheet row number
+      id: String(r[0] || ""),
+      name: String(r[1] || ""),
+      mail: String(r[2] || ""),
+      result: String(r[3] || ""),
+      note: String(r[4] || ""),
+      created_at: String(r[5] || ""),
+      status: String(r[6] || "ACTIVE"),
+    }));
+}
+
+function daysLeftForOk(createdAtIso) {
+  const d0 = dayjs(createdAtIso);
+  if (!d0.isValid()) return 0;
+  const diff = dayjs().startOf("day").diff(d0.startOf("day"), "day");
+  return Math.max(0, 14 - diff);
+}
+
+function shouldAutoDone(row) {
+  // only OK (HQ/QR/DB) auto-done after >14 days
+  if (!row) return false;
+  if (String(row.result || "").toUpperCase() === "TACH") return false;
+  const left = daysLeftForOk(row.created_at);
+  return left <= 0;
+}
+
+async function autoDoneIfNeeded(rows) {
+  // Update status to DONE for OK rows beyond 14 days
+  const toUpdate = rows.filter((r) => String(r.status || "").toUpperCase() !== "DONE" && shouldAutoDone(r));
+  for (const r of toUpdate) {
+    await updateValues(`MAIL_LOG!G${r.rowNumber}:G${r.rowNumber}`, [["DONE"]]);
+    r.status = "DONE";
+  }
+}
+
+async function updateLatestMailByMail({ mail, result, note, name }) {
+  const rows = await readMailLog();
+  const targetMail = normalizeMailFull(mail);
+  const matches = rows
+    .filter((r) => normalizeMailFull(r.mail) === targetMail)
+    .sort((a, b) => (a.created_at > b.created_at ? 1 : -1)); // cũ->mới
+  const last = matches[matches.length - 1];
+  if (!last) return { ok: false, reason: "Không tìm thấy mail để sửa" };
+
+  // Update result (D), note (E) if provided, name (B) if provided
+  const updates = [];
+  if (result) updates.push({ col: "D", val: String(result).toUpperCase() });
+  if (note != null && note !== "") updates.push({ col: "E", val: String(note) });
+  if (name != null && name !== "") updates.push({ col: "B", val: String(name) });
+
+  for (const u of updates) {
+    await updateValues(`MAIL_LOG!${u.col}${last.rowNumber}:${u.col}${last.rowNumber}`, [[u.val]]);
+  }
+
+  return { ok: true, row: last.rowNumber };
+}
+
+async function sendDanhSachDaMoi(chatId) {
+  const rows = await readMailLog();
+  await autoDoneIfNeeded(rows);
+
+  // sort cũ -> mới
+  rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
+
+  const tach = rows.filter((r) => String(r.result || "").toUpperCase() === "TACH");
+  const ok = rows.filter((r) => String(r.result || "").toUpperCase() !== "TACH");
+
+  const out = [];
+  out.push(`📋 <b>DANH SÁCH ĐÃ MỜI</b>\n`);
+
+  out.push(`❌ <b>TẠCH</b>`);
+  if (tach.length === 0) out.push(`<i>(trống)</i>`);
+  for (const r of tach) {
+    const nm = titleCaseVi(r.name);
+    const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
+    out.push(`• Mời <b>A. ${escapeHtml(nm)}</b> / ${escapeHtml(dt)}`);
+  }
+
+  out.push(`\n✅ <b>OK</b>`);
+  if (ok.length === 0) out.push(`<i>(trống)</i>`);
+  for (const r of ok) {
+    const nm = titleCaseVi(r.name);
+    const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
+    const left = daysLeftForOk(r.created_at);
+    const resTxt = prettyResultText(String(r.result || "").toUpperCase());
+    // Spec: mỗi ngày bấm danh sách -> cập nhật còn X ngày điểm danh
+    out.push(
+      `• Mời <b>A. ${escapeHtml(nm)}</b> ${escapeHtml(resTxt)} / ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`
+    );
+  }
+
+  await send(chatId, out.join("\n"), { reply_markup: leftKb() });
+}
+
+async function sendMailOnlyList(chatId) {
+  const rows = await readMailLog();
+  // collect unique mails only, preserve first-seen order cũ->mới
+  rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
+
+  const seen = new Set();
+  const mails = [];
+  for (const r of rows) {
+    const full = String(r.mail || "").trim().toLowerCase();
+    if (!full || !full.includes("@")) continue; // skip phone-only lines
+    const short = toMailShortForCopy(full);
+    if (!short) continue;
+    if (seen.has(short)) continue;
+    seen.add(short);
+    mails.push(short);
+  }
+
+  await send(chatId, mails.join("\n"), { reply_markup: leftKb(), __raw: true });
+}
+
+/* =========================
  * Cron placeholder
  * ========================= */
-cron.schedule("*/30 * * * *", async () => {});
+cron.schedule("*/30 * * * *", async () => {
+  // Không auto spam. Status DONE sẽ được update khi bấm danh sách đã mời.
+});
 
 /* =========================
  * Main handler
@@ -1785,7 +2112,7 @@ async function handleTextMessage(msg) {
   if (text === "📋 Danh Sách Máy") return listPhonesPretty(chatId);
   if (text === "📊 Phân Tích Mua Máy") return reportMachineAnalysis(chatId);
 
-  // ✅ NEW MENU BUTTONS (guide)
+  // Reset / sửa menu help
   if (text === "♻️ Reset Lô") {
     await send(
       chatId,
@@ -1797,16 +2124,60 @@ async function handleTextMessage(msg) {
   if (text === "✏️ Sửa Lô / Đổi Mã") {
     await send(
       chatId,
-      `✏️ <b>Sửa Lô / Đổi Mã</b>\n\n• Sửa kết quả (reset trước rồi chốt lại):\n<code>sua ma01 hq1 tach2</code>\n\n• Đổi mã lô:\n<code>sua ma01 ma09</code>`,
+      `✏️ <b>Sửa Lô / Đổi Mã</b>\n\n• Sửa kết quả:\n<code>sua ma01 hq1 tach2</code>\n\n• Đổi mã lô:\n<code>sua ma01 ma09</code>`,
       { reply_markup: leftKb() }
     );
+    return;
+  }
+
+  // ✅ MAIL MENU
+  if (text === "📋 Danh sách đã mời") {
+    await sendDanhSachDaMoi(chatId);
+    return;
+  }
+  if (text === "📧 Mail") {
+    await sendMailOnlyList(chatId);
     return;
   }
 
   // session
   if (await handleSessionInput(chatId, userName, text)) return;
 
-  // ✅ SUA commands
+  // ✅ MAIL edit
+  const mailEdit = parseMailEdit(text);
+  if (mailEdit) {
+    const r = await updateLatestMailByMail({
+      mail: mailEdit.mail,
+      result: mailEdit.result,
+      note: mailEdit.note,
+      name: mailEdit.name,
+    });
+    if (!r.ok) {
+      await send(chatId, `🥺 ${escapeHtml(r.reason || "Không sửa được")}`, { reply_markup: leftKb() });
+      return;
+    }
+    const nm = titleCaseVi(mailEdit.name || "");
+    const resTxt = prettyResultText(mailEdit.result);
+    await send(chatId, `✅ Đã sửa: <b>${escapeHtml(toMailShortForCopy(mailEdit.mail))}</b> → ${escapeHtml(resTxt)} nha~`, {
+      reply_markup: leftKb(),
+    });
+    return;
+  }
+
+  // ✅ MAIL add
+  const mailLine = parseMailLine(text);
+  if (mailLine) {
+    await addMailLog(mailLine);
+    const today = dayjs().format("DD/MM/YYYY");
+    const nm = titleCaseVi(mailLine.name);
+    const resTxt = prettyResultText(mailLine.result);
+    await send(chatId, `Mời <b>A. ${escapeHtml(nm)}</b> ${escapeHtml(resTxt)} / ${escapeHtml(today)}`, {
+      reply_markup: leftKb(),
+    });
+    return;
+  }
+
+  // ✅ SUA commands (lot)
   const sua = parseSuaCommand(text);
   if (sua) {
     if (sua.type === "rename") {
