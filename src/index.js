@@ -2442,3 +2442,51 @@ handleTextMessage = async function (msg) {
   // fallback về handler cũ
   return __oldHandleTextMessage(msg);
 };
+/* =========================
+ * FIX MIS-PARSE: MAIL INVITE vs REVENUE HQ/QR/DB
+ * Paste at end of src/index.js
+ * ========================= */
+
+// Nhận diện tin nhắn dạng "Tên mail@ kết_quả [note...]"
+// Ví dụ: "Abinh minhtiktok29@ hq", "A bình minhtiktok@ tạch ghi chú..."
+function __isMailInviteMessage(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return false;
+
+  // có @ và có keyword kết quả
+  const norm = normalizeForParse(raw);
+
+  // keyword kết quả (có/không dấu đều ok vì normalizeForParse đã xử lý)
+  const hasResult =
+    /\b(hq|qr|db|bd|tach|tachh|tac|tạch)\b/i.test(norm);
+
+  // mail token phải có "@"
+  const hasAt = raw.includes("@");
+
+  return hasAt && hasResult;
+}
+
+// Hook để chặn parser doanh thu chạy nhầm khi câu là MAIL invite
+const __oldHandleTextMessage__MAILFIX = handleTextMessage;
+handleTextMessage = async function (msg) {
+  const chatId = msg?.chat?.id;
+  const text = String(msg?.text || "").trim();
+
+  // Nếu là câu MAIL invite -> chạy handler cũ (vì handler cũ của bạn đã có phần MAIL_LOG),
+  // nhưng NGĂN không cho rơi vào parser doanh thu HQ/QR/DB (trường hợp code cũ ưu tiên doanh thu).
+  // Cách làm: Nếu detect mail invite mà bot trả về "đã ghi doanh thu ..." thì mình sẽ re-route lại 1 lần.
+  if (chatId && __isMailInviteMessage(text)) {
+    // Tạm gọi thẳng handler cũ trước
+    // Nhưng nếu code cũ đang ưu tiên doanh thu trước MAIL, ta sẽ chặn bằng cách:
+    // - Đổi keyword kết quả thành dạng không bị doanh thu bắt (thêm prefix "mail ")
+    // - để hệ thống MAIL parser bắt đúng
+    //
+    // Ví dụ: "Abinh minhtiktok29@ hq" -> "mail Abinh minhtiktok29@ hq"
+    const patched = `mail ${text}`;
+    // Clone msg để không ảnh hưởng nơi khác
+    const msg2 = { ...msg, text: patched };
+    return __oldHandleTextMessage__MAILFIX(msg2);
+  }
+
+  return __oldHandleTextMessage__MAILFIX(msg);
+};
