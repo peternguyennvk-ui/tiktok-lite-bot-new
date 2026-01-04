@@ -1371,6 +1371,16 @@ function detectGameFromText(normText) {
   return "";
 }
 
+// ✅ NEW: only accept quick revenue when FIRST TOKEN is command (hq/qr/db/them)
+function detectQuickRevenueFirstToken(normText) {
+  const t = normalizeSpaces(String(normText || ""));
+  if (!t) return "";
+  const first = t.split(" ")[0] || "";
+  if (first === "hq" || first === "qr" || first === "db") return first;
+  if (first === "them" || first === "thu" || first === "khac" || first === "ngoai") return "other";
+  return "";
+}
+
 /* =========================
  * Reset
  * ========================= */
@@ -1753,49 +1763,31 @@ function prettyResultText(result) {
   return "";
 }
 
-// Parse commands like:
-// "A bình Minhtiktop.v1@ Hq (ghi chú)"
-// "Abinh minhtiktok@ tạch ..."
-// "A tiến minhtik@ 0107... db"
+// ✅ FIX DỨT ĐIỂM: parse MAIL theo rawTokens, normalize từng token riêng lẻ
+// - Không dùng normTokens[] để tránh lệch index khi token có số (minhtiktok29@)
 function parseMailLine(text) {
   const raw = normalizeSpaces(String(text || ""));
   if (!raw) return null;
 
-  const norm = normalizeForParse(raw);
-
-  // Accept "a ..." or "a..." or "a. ..."
-  if (!(norm === "a" || norm.startsWith("a ") || norm.startsWith("a.") || norm.startsWith("a," ) || norm.startsWith("a-") || norm.startsWith("a_") || norm.startsWith("a"))) {
-    return null;
-  }
-  // Must begin with an "a" marker (user's habit). To avoid accidentally matching other commands:
-  // require first char is 'a' (case-insensitive) and next char is space or letter/dot.
-  const firstChar = norm[0];
-  if (firstChar !== "a") return null;
-
-  // Tokenize from original (keep accents for name/note), but use normalized tokens for detection
   const rawTokens = raw.split(/\s+/).filter(Boolean);
-  const normTokens = normalizeForParse(raw).split(/\s+/).filter(Boolean);
+  if (rawTokens.length < 3) return null;
 
-  // Determine if first token is like "A" or "Abinh"
-  // Remove leading marker from first raw token if it's glued.
+  // must start with A / Abinh / A.Bình ... (case-insensitive)
+  const firstRaw = rawTokens[0] || "";
+  const firstNorm = removeDiacritics(firstRaw).toLowerCase();
+
   let startIdx = 0;
-  let firstRaw = rawTokens[0] || "";
-  let firstNorm = normTokens[0] || "";
 
-  // If first token is "A" or "A." => skip it
-  if (firstNorm === "a" || firstNorm === "a." || firstNorm === "a," ) {
+  // Case: "A" or "A." => skip token 0
+  if (firstNorm === "a" || firstNorm === "a." || firstNorm === "a," || firstNorm === "a-") {
     startIdx = 1;
   } else if (firstNorm.startsWith("a") && firstNorm.length > 1) {
-    // glued: "Abinh" => treat as name token "bình"
-    // raw token may be "Abinh" or "A.Bình"
-    const glued = firstRaw;
-    const gluedNorm = removeDiacritics(glued).toLowerCase();
-    // remove leading 'a' or 'a.' etc
-    const stripped = glued.replace(/^A[\.\,\-\_]?/i, "");
-    // Replace token 0 to stripped as name token, keep startIdx=1 after we push it
-    rawTokens[0] = stripped || glued; // fallback
-    normTokens[0] = gluedNorm.replace(/^a[\.\,\-\_]?/i, "") || gluedNorm;
-    startIdx = 0; // still process token0 as name
+    // Case: "Abinh" / "A.Binh" / "A-Binh" => strip the leading A marker and keep the rest as name token
+    const stripped = firstRaw.replace(/^A[\.\,\-\_]?/i, "");
+    rawTokens[0] = stripped || firstRaw;
+    startIdx = 0;
+  } else {
+    return null;
   }
 
   let nameParts = [];
@@ -1806,7 +1798,7 @@ function parseMailLine(text) {
 
   for (let i = startIdx; i < rawTokens.length; i++) {
     const rt = rawTokens[i];
-    const nt = normTokens[i] || normalizeForParse(rt);
+    const nt = normalizeForParse(rt); // normalize token-by-token (no index mismatch)
 
     // mail detection: ANY token containing "@"
     if (!foundMail && rt.includes("@")) {
@@ -1854,8 +1846,6 @@ function parseMailEdit(text) {
   // also allow: "sua mail xxx@ hq ..."
   if (restNorm.startsWith("mail ")) {
     const tRaw = restRaw.replace(/^mail\s+/i, "");
-    // Fake an "A" prefix for reuse parser: need a name - but spec wants update by mail latest
-    // We'll parse mail + result + note, name is optional here.
     const toks = tRaw.split(/\s+/).filter(Boolean);
     let mailTk = "";
     let result = "";
@@ -1985,7 +1975,6 @@ async function sendDanhSachDaMoi(chatId) {
     const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
     const left = daysLeftForOk(r.created_at);
     const resTxt = prettyResultText(String(r.result || "").toUpperCase());
-    // Spec: mỗi ngày bấm danh sách -> cập nhật còn X ngày điểm danh
     out.push(
       `• Mời <b>A. ${escapeHtml(nm)}</b> ${escapeHtml(resTxt)} / ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`
     );
@@ -2156,7 +2145,6 @@ async function handleTextMessage(msg) {
       await send(chatId, `🥺 ${escapeHtml(r.reason || "Không sửa được")}`, { reply_markup: leftKb() });
       return;
     }
-    const nm = titleCaseVi(mailEdit.name || "");
     const resTxt = prettyResultText(mailEdit.result);
     await send(chatId, `✅ Đã sửa: <b>${escapeHtml(toMailShortForCopy(mailEdit.mail))}</b> → ${escapeHtml(resTxt)} nha~`, {
       reply_markup: leftKb(),
@@ -2265,13 +2253,13 @@ async function handleTextMessage(msg) {
     return;
   }
 
-  // quick revenue (MAIN doanh thu)
+  // ✅ quick revenue (MAIN doanh thu) — FIX: chỉ nhận khi FIRST TOKEN là lệnh thu
   const norm = normalizeForParse(text);
-  const game = detectGameFromText(norm);
+  const quickGame = detectQuickRevenueFirstToken(norm);
   const amt = extractMoneyFromText(text);
 
-  if (game && amt != null) {
-    const g = game === "other" ? "other" : game;
+  if (quickGame && amt != null) {
+    const g = quickGame === "other" ? "other" : quickGame;
     const type = g === "other" ? "other" : "manual";
     await addGameRevenue({ game: g, type, amount: amt, note: "input", chatId, userName });
     await send(chatId, `✅ <b>Đã ghi doanh thu</b> <code>${escapeHtml(g.toUpperCase())}</code>: <b>${moneyWON(amt)}</b>`, {
@@ -2360,133 +2348,3 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ BOT READY on ${PORT} | ${VERSION}`);
 });
-/* =========================
- * SIMPLE DELETE MAIL (PASTE AT END – NO TOUCH OLD CODE)
- * ========================= */
-
-// Parse: "xoa mail xxx@" hoặc "xoa mail MAIL03"
-function __parseDeleteMail(text) {
-  const raw = String(text || "").trim();
-  const norm = normalizeForParse(raw);
-
-  if (!norm.startsWith("xoa ")) return null;
-
-  // xoa mail MAIL03
-  let m = norm.match(/^xoa\s+mail\s+(mail\d+)\b/i);
-  if (m) return { mode: "id", id: m[1].toUpperCase() };
-
-  // xoa mail xxx@
-  m = raw.match(/^xoa\s+mail\s+(\S+)/i);
-  if (m && m[1].includes("@")) {
-    return { mode: "mail", mail: normalizeMailFull(m[1]) };
-  }
-
-  return null;
-}
-
-// Xóa dòng mail gần nhất theo mail
-async function __deleteMailByMail(mail) {
-  const rows = await readMailLog();
-  const target = normalizeMailFull(mail);
-
-  const list = rows
-    .filter(r => normalizeMailFull(r.mail) === target)
-    .sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
-
-  const last = list[list.length - 1];
-  if (!last) return false;
-
-  await updateValues(
-    `MAIL_LOG!A${last.rowNumber}:G${last.rowNumber}`,
-    [["", "", "", "", "", "", ""]]
-  );
-  return true;
-}
-
-// Xóa dòng mail theo ID
-async function __deleteMailById(id) {
-  const rows = await readMailLog();
-  const row = rows.find(r => String(r.id || "").toUpperCase() === id);
-  if (!row) return false;
-
-  await updateValues(
-    `MAIL_LOG!A${row.rowNumber}:G${row.rowNumber}`,
-    [["", "", "", "", "", "", ""]]
-  );
-  return true;
-}
-
-// AUTO-HOOK: chỉ cần dán cuối file, bot tự hiểu
-const __oldHandleTextMessage = handleTextMessage;
-handleTextMessage = async function (msg) {
-  const chatId = msg?.chat?.id;
-  const text = String(msg?.text || "").trim();
-
-  if (chatId && text) {
-    const del = __parseDeleteMail(text);
-    if (del) {
-      let ok = false;
-      if (del.mode === "id") ok = await __deleteMailById(del.id);
-      else ok = await __deleteMailByMail(del.mail);
-
-      if (!ok) {
-        await send(chatId, `🥺 Không tìm thấy mail để xóa nha`, { reply_markup: leftKb() });
-        return;
-      }
-
-      await send(chatId, `🗑️ Đã xóa mail rồi nha~`, { reply_markup: leftKb() });
-      return;
-    }
-  }
-
-  // fallback về handler cũ
-  return __oldHandleTextMessage(msg);
-};
-/* =========================
- * FIX MIS-PARSE: MAIL INVITE vs REVENUE HQ/QR/DB
- * Paste at end of src/index.js
- * ========================= */
-
-// Nhận diện tin nhắn dạng "Tên mail@ kết_quả [note...]"
-// Ví dụ: "Abinh minhtiktok29@ hq", "A bình minhtiktok@ tạch ghi chú..."
-function __isMailInviteMessage(text) {
-  const raw = String(text || "").trim();
-  if (!raw) return false;
-
-  // có @ và có keyword kết quả
-  const norm = normalizeForParse(raw);
-
-  // keyword kết quả (có/không dấu đều ok vì normalizeForParse đã xử lý)
-  const hasResult =
-    /\b(hq|qr|db|bd|tach|tachh|tac|tạch)\b/i.test(norm);
-
-  // mail token phải có "@"
-  const hasAt = raw.includes("@");
-
-  return hasAt && hasResult;
-}
-
-// Hook để chặn parser doanh thu chạy nhầm khi câu là MAIL invite
-const __oldHandleTextMessage__MAILFIX = handleTextMessage;
-handleTextMessage = async function (msg) {
-  const chatId = msg?.chat?.id;
-  const text = String(msg?.text || "").trim();
-
-  // Nếu là câu MAIL invite -> chạy handler cũ (vì handler cũ của bạn đã có phần MAIL_LOG),
-  // nhưng NGĂN không cho rơi vào parser doanh thu HQ/QR/DB (trường hợp code cũ ưu tiên doanh thu).
-  // Cách làm: Nếu detect mail invite mà bot trả về "đã ghi doanh thu ..." thì mình sẽ re-route lại 1 lần.
-  if (chatId && __isMailInviteMessage(text)) {
-    // Tạm gọi thẳng handler cũ trước
-    // Nhưng nếu code cũ đang ưu tiên doanh thu trước MAIL, ta sẽ chặn bằng cách:
-    // - Đổi keyword kết quả thành dạng không bị doanh thu bắt (thêm prefix "mail ")
-    // - để hệ thống MAIL parser bắt đúng
-    //
-    // Ví dụ: "Abinh minhtiktok29@ hq" -> "mail Abinh minhtiktok29@ hq"
-    const patched = `mail ${text}`;
-    // Clone msg để không ảnh hưởng nơi khác
-    const msg2 = { ...msg, text: patched };
-    return __oldHandleTextMessage__MAILFIX(msg2);
-  }
-
-  return __oldHandleTextMessage__MAILFIX(msg);
-};
