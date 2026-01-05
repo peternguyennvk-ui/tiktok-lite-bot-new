@@ -1658,45 +1658,39 @@ async function handleSessionInput(chatId, userName, text) {
     return true;
   }
 
-  // REVENUE EDIT (MAIN)
+  // REVENUE EDIT (MAIN) - SET ABSOLUTE
   if (sess.flow === "revenue_edit" && sess.step === "amount") {
-    const newTotal = parseMoneyK(text);
-    if (newTotal === null) {
+    const newTotal = extractMoneyFromText(text);
+    if (newTotal == null) {
       await send(chatId, `Nhập kiểu <code>120k</code> nha bạn iu~`, { reply_markup: rightKb() });
       return true;
     }
     clearSession(chatId);
 
     const rows = await readGameRevenue();
-    const currentTotal = rows.reduce((a, b) => a + (Number(b.amount) || 0), 0);
-    const delta = newTotal - currentTotal;
+    const current = rows.reduce((a, b) => a + b.amount, 0);
+    const delta = Math.round(newTotal - current);
 
     await addGameRevenue({
       game: "all",
       type: "revenue_adjust",
       amount: delta,
-      note: `SET_TOTAL ${currentTotal} -> ${newTotal}`,
+      note: `SET_TOTAL ${current} -> ${newTotal}`,
       chatId,
       userName,
     });
 
     await send(
       chatId,
-      `✅ <b>Đã SET tổng doanh thu</b>: <b>${moneyWON(newTotal)}</b>
-` +
-        `Cũ: <b>${moneyWON(currentTotal)}</b>
-` +
-        `Bù chênh: <code>${delta >= 0 ? "+" : ""}${moneyWON(delta)}</code>`,
+      `✅ <b>Đã chỉnh tổng doanh thu</b>
+Cũ: <b>${moneyWON(current)}</b>
+Mới: <b>${moneyWON(newTotal)}</b>
+Bù chênh: <code>${delta >= 0 ? "+" : ""}${moneyWON(delta)}</code>`,
       { reply_markup: rightKb() }
     );
     return true;
   }
-    clearSession(chatId);
 
-    await addGameRevenue({ game: "all", type: "revenue_adjust", amount: amt, note: "SET_TOTAL", chatId, userName });
-    await send(chatId, `✅ <b>Đã cộng chỉnh doanh thu</b>: <b>${moneyWON(amt)}</b>`, { reply_markup: rightKb() });
-    return true;
-  }
 
   // RESOLVE missing game (normal + overwrite)
   if (sess.flow === "resolve_need_game" && sess.step === "game") {
@@ -1947,8 +1941,7 @@ function daysLeftForOk(createdAtIso) {
 function shouldAutoDone(row) {
   // only OK (HQ/QR/DB) auto-done after >14 days
   if (!row) return false;
-  const r = String(row.result || "").toUpperCase();
-  if (!["HQ", "QR", "DB"].includes(r)) return false;
+  if (String(row.result || "").toUpperCase() === "TACH") return false;
   const left = daysLeftForOk(row.created_at);
   return left <= 0;
 }
@@ -1999,83 +1992,73 @@ async function sendDanhSachDaMoi(chatId) {
 `);
 
   // ❌ TẠCH
-  out.push(`<b>❌ TẠCH</b>`);
-  if (!tach.length) {
-    out.push(`(trống)
-`);
-  } else {
-    for (const r of tach) {
-      const id = String(r.id || "").trim();
-      const nm = titleCaseVi(r.name);
-      const mailFull = normalizeMailFull(r.mail);
-      const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
-      const resTxt = "tạch";
-      out.push(
-        `• <b>[${escapeHtml(id)}] A. ${escapeHtml(nm || "(không tên)")}</b>
-` +
-          `  📧 ${escapeHtml(mailFull)}
-` +
-          (String(r.note || "").trim() ? `  📝 ${escapeHtml(String(r.note).trim())}
-` : "") +
-          `  ❌ ${escapeHtml(resTxt)}
-` +
-          `  📅 ${escapeHtml(dt)}`
-      );
-    }
-    out.push(""); // spacing
+  out.push(`❌ <b>TẠCH</b>`);
+  if (tach.length === 0) out.push(`<i>(trống)</i>`);
+  for (const r of tach) {
+    const id = String(r.id || "").trim();
+    const nm = titleCaseVi(r.name);
+    const mail = String(r.mail || "").trim();
+    const note = String(r.note || "").trim();
+    const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
+
+    // Mỗi dòng hiển thị đủ: Tên, Mail full, Note (nếu có), KQ, Ngày
+    const lines = [];
+    lines.push(`• <b>[${escapeHtml(id)}]</b> A. <b>${escapeHtml(nm)}</b>`);
+    lines.push(`  📧 ${escapeHtml(mail)}`);
+    if (note) lines.push(`  📝 ${escapeHtml(note)}`);
+    lines.push(`  ❌ ${escapeHtml(prettyResultText("TACH"))}`);
+    lines.push(`  📅 ${escapeHtml(dt)}`);
+    out.push(lines.join("
+"));
   }
 
   // ✅ OK
-  out.push(`<b>✅ OK</b>`);
-  if (!ok.length) {
-    out.push(`(trống)`);
-  } else {
-    for (const r of ok) {
-      const id = String(r.id || "").trim();
-      const nm = titleCaseVi(r.name);
-      const mailFull = normalizeMailFull(r.mail);
-      const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
-      const left = daysLeftForOk(r.created_at);
-      const resTxt = prettyResultText(String(r.result || "").toUpperCase());
+  out.push(`
+✅ <b>OK</b>`);
+  if (ok.length === 0) out.push(`<i>(trống)</i>`);
+  for (const r of ok) {
+    const id = String(r.id || "").trim();
+    const nm = titleCaseVi(r.name);
+    const mail = String(r.mail || "").trim();
+    const note = String(r.note || "").trim();
+    const res = String(r.result || "").toUpperCase();
+    const resTxt = prettyResultText(res) || res.toLowerCase();
+    const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
+    const left = daysLeftForOk(r.created_at);
 
-      const attendanceTxt = left > 0 ? `(còn <b>${left}</b> ngày điểm danh)` : `(hết hạn điểm danh)`;
-
-      out.push(
-        `• <b>[${escapeHtml(id)}] A. ${escapeHtml(nm || "(không tên)")}</b>
-` +
-          `  📧 ${escapeHtml(mailFull)}
-` +
-          (String(r.note || "").trim() ? `  📝 ${escapeHtml(String(r.note).trim())}
-` : "") +
-          `  🎁 ${escapeHtml(resTxt)}
-` +
-          `  📅 ${escapeHtml(dt)} ${attendanceTxt}`
-      );
-    }
+    const lines = [];
+    lines.push(`• <b>[${escapeHtml(id)}]</b> A. <b>${escapeHtml(nm)}</b>`);
+    lines.push(`  📧 ${escapeHtml(mail)}`);
+    if (note) lines.push(`  📝 ${escapeHtml(note)}`);
+    lines.push(`  🎁 ${escapeHtml(resTxt)}`);
+    lines.push(`  📅 ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`);
+    out.push(lines.join("
+"));
   }
 
   await send(chatId, out.join("
+
 "), { reply_markup: leftKb() });
 }
 
 async function sendMailOnlyList(chatId) {
   const rows = await readMailLog();
-  // collect unique mails only, preserve first-seen order cũ->mới
+  // collect unique full mails, preserve first-seen order cũ->mới
   rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
 
   const seen = new Set();
   const mails = [];
   for (const r of rows) {
-    const full = String(r.mail || "").trim().toLowerCase();
-    if (!full || !full.includes("@")) continue; // skip phone-only lines
-    const short = toMailShortForCopy(full);
-    if (!short) continue;
-    if (seen.has(short)) continue;
-    seen.add(short);
-    mails.push(short);
+    const full = String(r.mail || "").trim();
+    if (!full || !full.includes("@")) continue;
+    const key = full.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    mails.push(full);
   }
 
-  await send(chatId, mails.join("\n"), { reply_markup: leftKb(), __raw: true });
+  await send(chatId, mails.join("
+"), { reply_markup: leftKb(), __raw: true });
 }
 
 /* =========================
@@ -2140,7 +2123,7 @@ async function handleTextMessage(msg) {
 
   if (text === "✏️ Sửa Tổng Doanh Thu") {
     setSession(chatId, { flow: "revenue_edit", step: "amount", data: {} });
-    await send(chatId, `✏️ <b>Sửa tổng doanh thu</b>\nNhập <b>TỔNG</b> doanh thu mới (vd <code>0k</code>, <code>87k</code>, <code>120k</code>) nha~`, {
+    await send(chatId, `✏️ <b>Sửa tổng doanh thu</b>\nNhập <b>TỔNG</b> doanh thu mới (vd <code>87k</code>, <code>0k</code>) nha~`, {
       reply_markup: rightKb(),
     });
     return;
