@@ -1660,36 +1660,34 @@ async function handleSessionInput(chatId, userName, text) {
 
   // REVENUE EDIT (MAIN)
   if (sess.flow === "revenue_edit" && sess.step === "amount") {
-    const amt = extractMoneyFromText(text);
-    if (amt == null) {
+    const amtNewTotal = parseMoneyK(text);
+    if (amtNewTotal === null) {
       await send(chatId, `Nhập kiểu <code>120k</code> nha bạn iu~`, { reply_markup: rightKb() });
       return true;
     }
-    // ✅ FIX: SET ABSOLUTE tổng doanh thu
-    const rows = await readGameRevenue();
-    const current = rows.reduce((a, b) => a + b.amount, 0);
-    const newTotal = Math.round(amt);
-    const delta = Math.round(newTotal - current);
     clearSession(chatId);
 
-    // delta có thể = 0 (user nhập đúng bằng hiện tại) => vẫn confirm cho rõ
-    if (delta !== 0) {
-      await addGameRevenue({
-        game: "all",
-        type: "revenue_adjust",
-        amount: delta,
-        note: `SET_TOTAL ${current} -> ${newTotal}`,
-        chatId,
-        userName,
-      });
-    }
+    const rows = await readGameRevenue();
+    const currentTotal = rows.reduce((a, b) => a + (Number(b.amount) || 0), 0);
+    const delta = amtNewTotal - currentTotal;
 
-    const html =
-      `✏️ <b>SỬA TỔNG DOANH THU</b>\n\n` +
-      `Cũ: <b>${moneyWON(current)}</b>\n` +
-      `Mới: <b>${moneyWON(newTotal)}</b>\n` +
-      `Bù chênh: <code>${delta >= 0 ? "+" : ""}${moneyWON(delta)}</code>`;
-    await send(chatId, html, { reply_markup: rightKb() });
+    await addGameRevenue({
+      game: "all",
+      type: "revenue_adjust",
+      amount: delta,
+      note: `SET_TOTAL ${currentTotal} -> ${amtNewTotal}`,
+      chatId,
+      userName,
+    });
+
+    await send(
+      chatId,
+      `✅ <b>Đã SET tổng doanh thu</b>: <b>${moneyWON(amtNewTotal)}</b>
+• Cộng chỉnh: <b>${moneyWON(delta)}</b> (từ ${moneyWON(
+        currentTotal
+      )} -> ${moneyWON(amtNewTotal)})`,
+      { reply_markup: rightKb() }
+    );
     return true;
   }
 
@@ -1942,10 +1940,13 @@ function daysLeftForOk(createdAtIso) {
 function shouldAutoDone(row) {
   // only OK (HQ/QR/DB) auto-done after >14 days
   if (!row) return false;
-  if (String(row.result || "").toUpperCase() === "TACH") return false;
+  const res = String(row.result || "").toUpperCase();
+  if (res === "TACH") return false;
+  if (!["HQ", "QR", "DB"].includes(res)) return false;
   const left = daysLeftForOk(row.created_at);
   return left <= 0;
 }
+
 
 async function autoDoneIfNeeded(rows) {
   // Update status to DONE for OK rows beyond 14 days
@@ -1986,7 +1987,7 @@ async function sendDanhSachDaMoi(chatId) {
   rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
 
   const tach = rows.filter((r) => String(r.result || "").toUpperCase() === "TACH");
-  const ok = rows.filter((r) => String(r.result || "").toUpperCase() !== "TACH");
+  const ok = rows.filter((r) => ["HQ","QR","DB"].includes(String(r.result || "").toUpperCase()));
 
   const out = [];
   out.push(`📋 <b>DANH SÁCH ĐÃ MỜI</b>\n`);
@@ -2097,9 +2098,7 @@ async function handleTextMessage(msg) {
 
   if (text === "✏️ Sửa Tổng Doanh Thu") {
     setSession(chatId, { flow: "revenue_edit", step: "amount", data: {} });
-    // ✅ FIX: "Sửa" = SET ABSOLUTE (nhập tổng mới, bot tự tính delta)
-    await send(chatId, `✏️ <b>Sửa tổng doanh thu</b>
-Nhập <b>TỔNG doanh thu MỚI</b> (vd <code>87k</code>) nha~`, {
+    await send(chatId, `✏️ <b>Sửa tổng doanh thu</b>\nNhập <b>TỔNG</b> doanh thu mới (vd <code>0k</code>, <code>87k</code>, <code>120k</code>) nha~`, {
       reply_markup: rightKb(),
     });
     return;
