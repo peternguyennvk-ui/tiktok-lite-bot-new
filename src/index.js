@@ -2056,59 +2056,89 @@ async function deleteLatestMailByMail(mail) {
 
 async function sendDanhSachDaMoi(chatId) {
   const rows = await readMailLog();
+
+  // ✅ Rule 14 ngày: chỉ áp dụng cho OK (HQ/QR/DB)
   await autoDoneIfNeeded(rows);
 
   // sort cũ -> mới
   rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
 
   const tach = rows.filter((r) => String(r.result || "").toUpperCase() === "TACH");
-  const ok = rows.filter((r) => String(r.result || "").toUpperCase() !== "TACH");
+  const ok = rows.filter((r) => ["HQ", "QR", "DB"].includes(String(r.result || "").toUpperCase()));
 
   const out = [];
-  out.push(`📋 <b>DANH SÁCH ĐÃ MỜI</b>\n`);
+  out.push(`📋 <b>DANH SÁCH ĐÃ MỜI</b>
+`);
 
+  // ❌ TẠCH
   out.push(`❌ <b>TẠCH</b>`);
   if (tach.length === 0) out.push(`<i>(trống)</i>`);
   for (const r of tach) {
+    const id = String(r.id || "").trim().toUpperCase();
     const nm = titleCaseVi(r.name);
+    const mail = String(r.mail || "").trim();
+    const note = String(r.note || "").trim();
     const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
-    out.push(`• Mời <b>A. ${escapeHtml(nm)}</b> / ${escapeHtml(dt)}`);
+    const resTxt = prettyResultText("TACH");
+
+    const lines = [];
+    lines.push(`• <b>[${escapeHtml(id)}]</b> A. ${escapeHtml(nm)}`);
+    if (mail) lines.push(`  📧 ${escapeHtml(mail)}`);
+    if (note) lines.push(`  📝 ${escapeHtml(note)}`);
+    lines.push(`  ❌ ${escapeHtml(resTxt)}`);
+    if (dt) lines.push(`  📅 ${escapeHtml(dt)}`);
+    out.push(lines.join("
+"));
   }
 
-  out.push(`\n✅ <b>OK</b>`);
+  // ✅ OK
+  out.push(`
+✅ <b>OK</b>`);
   if (ok.length === 0) out.push(`<i>(trống)</i>`);
   for (const r of ok) {
+    const id = String(r.id || "").trim().toUpperCase();
     const nm = titleCaseVi(r.name);
+    const mail = String(r.mail || "").trim();
+    const note = String(r.note || "").trim();
     const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
     const left = daysLeftForOk(r.created_at);
-    const resTxt = prettyResultText(String(r.result || "").toUpperCase());
-    // Spec: mỗi ngày bấm danh sách -> cập nhật còn X ngày điểm danh
-    out.push(
-      `• Mời <b>A. ${escapeHtml(nm)}</b> ${escapeHtml(resTxt)} / ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`
-    );
+    const res = String(r.result || "").toUpperCase();
+    const resTxt = prettyResultText(res);
+
+    const lines = [];
+    lines.push(`• <b>[${escapeHtml(id)}]</b> A. ${escapeHtml(nm)}`);
+    if (mail) lines.push(`  📧 ${escapeHtml(mail)}`);
+    if (note) lines.push(`  📝 ${escapeHtml(note)}`);
+    lines.push(`  🎁 ${escapeHtml(resTxt)}`);
+    if (dt) lines.push(`  📅 ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`);
+    else lines.push(`  (còn <b>${left}</b> ngày điểm danh)`);
+    out.push(lines.join("
+"));
   }
 
-  await send(chatId, out.join("\n"), { reply_markup: leftKb() });
+  await send(chatId, out.join("
+"), { reply_markup: leftKb() });
 }
 
 async function sendMailOnlyList(chatId) {
   const rows = await readMailLog();
-  // collect unique mails only, preserve first-seen order cũ->mới
+  // Unique (không trùng) – giữ thứ tự cũ -> mới
   rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
 
   const seen = new Set();
   const mails = [];
   for (const r of rows) {
-    const full = String(r.mail || "").trim().toLowerCase();
-    if (!full || !full.includes("@")) continue; // skip phone-only lines
-    const short = toMailShortForCopy(full);
-    if (!short) continue;
-    if (seen.has(short)) continue;
-    seen.add(short);
-    mails.push(short);
+    const full = String(r.mail || "").trim();
+    if (!full) continue;
+    const key = full.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    mails.push(full); // ✅ luôn FULL email có domain (không rút gọn xx@)
   }
 
-  await send(chatId, mails.join("\n"), { reply_markup: leftKb(), __raw: true });
+  const out = mails.length ? mails.join("
+") : "(chưa có mail)";
+  await send(chatId, out, { reply_markup: leftKb(), __raw: true });
 }
 
 /* =========================
