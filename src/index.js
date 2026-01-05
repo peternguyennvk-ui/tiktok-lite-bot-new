@@ -2008,8 +2008,7 @@ async function sendDanhSachDaMoi(chatId) {
     if (note) lines.push(`  📝 ${escapeHtml(note)}`);
     lines.push(`  ❌ ${escapeHtml(prettyResultText("TACH"))}`);
     lines.push(`  📅 ${escapeHtml(dt)}`);
-    out.push(lines.join("
-"));
+    out.push(lines.join("\n"));
   }
 
   // ✅ OK
@@ -2032,13 +2031,10 @@ async function sendDanhSachDaMoi(chatId) {
     if (note) lines.push(`  📝 ${escapeHtml(note)}`);
     lines.push(`  🎁 ${escapeHtml(resTxt)}`);
     lines.push(`  📅 ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`);
-    out.push(lines.join("
-"));
+    out.push(lines.join("\n"));
   }
 
-  await send(chatId, out.join("
-
-"), { reply_markup: leftKb() });
+  await send(chatId, out.join("\n"), { reply_markup: leftKb() });
 }
 
 async function sendMailOnlyList(chatId) {
@@ -2057,8 +2053,7 @@ async function sendMailOnlyList(chatId) {
     mails.push(full);
   }
 
-  await send(chatId, mails.join("
-"), { reply_markup: leftKb(), __raw: true });
+  await send(chatId, mails.join("\n"), { reply_markup: leftKb(), __raw: true });
 }
 
 /* =========================
