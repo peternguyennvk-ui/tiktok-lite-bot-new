@@ -1658,39 +1658,40 @@ async function handleSessionInput(chatId, userName, text) {
     return true;
   }
 
-  // REVENUE EDIT (MAIN) - SET ABSOLUTE
+  // REVENUE EDIT (MAIN)
   if (sess.flow === "revenue_edit" && sess.step === "amount") {
-    const newTotal = extractMoneyFromText(text);
-    if (newTotal == null) {
+    const amt = extractMoneyFromText(text);
+    if (amt == null) {
       await send(chatId, `Nhập kiểu <code>120k</code> nha bạn iu~`, { reply_markup: rightKb() });
       return true;
     }
-    clearSession(chatId);
-
+    // ✅ FIX: SET ABSOLUTE tổng doanh thu
     const rows = await readGameRevenue();
     const current = rows.reduce((a, b) => a + b.amount, 0);
+    const newTotal = Math.round(amt);
     const delta = Math.round(newTotal - current);
+    clearSession(chatId);
 
-    await addGameRevenue({
-      game: "all",
-      type: "revenue_adjust",
-      amount: delta,
-      note: `SET_TOTAL ${current} -> ${newTotal}`,
-      chatId,
-      userName,
-    });
+    // delta có thể = 0 (user nhập đúng bằng hiện tại) => vẫn confirm cho rõ
+    if (delta !== 0) {
+      await addGameRevenue({
+        game: "all",
+        type: "revenue_adjust",
+        amount: delta,
+        note: `SET_TOTAL ${current} -> ${newTotal}`,
+        chatId,
+        userName,
+      });
+    }
 
-    await send(
-      chatId,
-      `✅ <b>Đã chỉnh tổng doanh thu</b>
-Cũ: <b>${moneyWON(current)}</b>
-Mới: <b>${moneyWON(newTotal)}</b>
-Bù chênh: <code>${delta >= 0 ? "+" : ""}${moneyWON(delta)}</code>`,
-      { reply_markup: rightKb() }
-    );
+    const html =
+      `✏️ <b>SỬA TỔNG DOANH THU</b>\n\n` +
+      `Cũ: <b>${moneyWON(current)}</b>\n` +
+      `Mới: <b>${moneyWON(newTotal)}</b>\n` +
+      `Bù chênh: <code>${delta >= 0 ? "+" : ""}${moneyWON(delta)}</code>`;
+    await send(chatId, html, { reply_markup: rightKb() });
     return true;
   }
-
 
   // RESOLVE missing game (normal + overwrite)
   if (sess.flow === "resolve_need_game" && sess.step === "game") {
@@ -1896,6 +1897,54 @@ function parseMailEdit(text) {
   return null;
 }
 
+// Delete command:
+// - "xoa mail minhtiktok@" (delete latest by mail)
+// - "xoa mail MAIL01" / "xoa MAIL01" (delete by id)
+// - also accept "xoa 01" => MAIL01
+function parseMailDelete(text) {
+  const raw = normalizeSpaces(String(text || ""));
+  if (!raw) return null;
+  const norm = normalizeForParse(raw);
+  if (!norm.startsWith("xoa ")) return null;
+
+  // remove "xoa"
+  let restRaw = raw.slice(raw.toLowerCase().indexOf("xoa") + 3).trim();
+  if (!restRaw) return null;
+
+  // allow optional leading "mail"
+  const restNorm = normalizeForParse(restRaw);
+  if (restNorm.startsWith("mail ")) restRaw = restRaw.replace(/^mail\s+/i, "");
+
+  restRaw = normalizeSpaces(restRaw);
+  if (!restRaw) return null;
+
+  const toks = restRaw.split(/\s+/).filter(Boolean);
+  const first = toks[0] || "";
+  if (!first) return null;
+
+  // by mail
+  if (first.includes("@")) {
+    const m = normalizeMailFull(first);
+    if (!m) return null;
+    return { by: "mail", mail: m };
+  }
+
+  // by id: MAIL01 / mail01 / Mail01
+  if (/^mail\d+$/i.test(first)) {
+    return { by: "id", id: first.toUpperCase() };
+  }
+
+  // by number: 1 / 01 / 001
+  if (/^\d{1,3}$/.test(first)) {
+    const n = String(Number(first));
+    if (!n || n === "NaN") return null;
+    return { by: "id", id: ("MAIL" + n.padStart(2, "0")).toUpperCase() };
+  }
+
+  return null;
+}
+
+
 async function nextMailId() {
   const rows = await getValues("MAIL_LOG!A2:A");
   let max = 0;
@@ -1977,6 +2026,34 @@ async function updateLatestMailByMail({ mail, result, note, name }) {
   return { ok: true, row: last.rowNumber };
 }
 
+async function deleteMailRowByRowNumber(rowNumber) {
+  // Clear A:G for that row (keep row index stable)
+  await clearValues(`MAIL_LOG!A${rowNumber}:G${rowNumber}`);
+  return true;
+}
+
+async function deleteMailById(id) {
+  const rows = await readMailLog();
+  const target = String(id || "").trim().toUpperCase();
+  const found = rows.find((r) => String(r.id || "").trim().toUpperCase() === target);
+  if (!found) return { ok: false, reason: "Không tìm thấy ID để xóa" };
+  await deleteMailRowByRowNumber(found.rowNumber);
+  return { ok: true, id: found.id, mail: found.mail };
+}
+
+async function deleteLatestMailByMail(mail) {
+  const rows = await readMailLog();
+  const targetMail = normalizeMailFull(mail);
+  const matches = rows
+    .filter((r) => normalizeMailFull(r.mail) === targetMail)
+    .sort((a, b) => (a.created_at > b.created_at ? 1 : -1)); // cũ->mới
+  const last = matches[matches.length - 1];
+  if (!last) return { ok: false, reason: "Không tìm thấy mail để xóa" };
+  await deleteMailRowByRowNumber(last.rowNumber);
+  return { ok: true, id: last.id, mail: last.mail };
+}
+
+
 async function sendDanhSachDaMoi(chatId) {
   const rows = await readMailLog();
   await autoDoneIfNeeded(rows);
@@ -1985,53 +2062,30 @@ async function sendDanhSachDaMoi(chatId) {
   rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
 
   const tach = rows.filter((r) => String(r.result || "").toUpperCase() === "TACH");
-  const ok = rows.filter((r) => ["HQ", "QR", "DB"].includes(String(r.result || "").toUpperCase()));
+  const ok = rows.filter((r) => String(r.result || "").toUpperCase() !== "TACH");
 
   const out = [];
-  out.push(`📋 <b>DANH SÁCH ĐÃ MỜI</b>
-`);
+  out.push(`📋 <b>DANH SÁCH ĐÃ MỜI</b>\n`);
 
-  // ❌ TẠCH
   out.push(`❌ <b>TẠCH</b>`);
   if (tach.length === 0) out.push(`<i>(trống)</i>`);
   for (const r of tach) {
-    const id = String(r.id || "").trim();
     const nm = titleCaseVi(r.name);
-    const mail = String(r.mail || "").trim();
-    const note = String(r.note || "").trim();
     const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
-
-    // Mỗi dòng hiển thị đủ: Tên, Mail full, Note (nếu có), KQ, Ngày
-    const lines = [];
-    lines.push(`• <b>[${escapeHtml(id)}]</b> A. <b>${escapeHtml(nm)}</b>`);
-    lines.push(`  📧 ${escapeHtml(mail)}`);
-    if (note) lines.push(`  📝 ${escapeHtml(note)}`);
-    lines.push(`  ❌ ${escapeHtml(prettyResultText("TACH"))}`);
-    lines.push(`  📅 ${escapeHtml(dt)}`);
-    out.push(lines.join("\n"));
+    out.push(`• Mời <b>A. ${escapeHtml(nm)}</b> / ${escapeHtml(dt)}`);
   }
 
-  // ✅ OK
-  out.push(`
-✅ <b>OK</b>`);
+  out.push(`\n✅ <b>OK</b>`);
   if (ok.length === 0) out.push(`<i>(trống)</i>`);
   for (const r of ok) {
-    const id = String(r.id || "").trim();
     const nm = titleCaseVi(r.name);
-    const mail = String(r.mail || "").trim();
-    const note = String(r.note || "").trim();
-    const res = String(r.result || "").toUpperCase();
-    const resTxt = prettyResultText(res) || res.toLowerCase();
     const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
     const left = daysLeftForOk(r.created_at);
-
-    const lines = [];
-    lines.push(`• <b>[${escapeHtml(id)}]</b> A. <b>${escapeHtml(nm)}</b>`);
-    lines.push(`  📧 ${escapeHtml(mail)}`);
-    if (note) lines.push(`  📝 ${escapeHtml(note)}`);
-    lines.push(`  🎁 ${escapeHtml(resTxt)}`);
-    lines.push(`  📅 ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`);
-    out.push(lines.join("\n"));
+    const resTxt = prettyResultText(String(r.result || "").toUpperCase());
+    // Spec: mỗi ngày bấm danh sách -> cập nhật còn X ngày điểm danh
+    out.push(
+      `• Mời <b>A. ${escapeHtml(nm)}</b> ${escapeHtml(resTxt)} / ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`
+    );
   }
 
   await send(chatId, out.join("\n"), { reply_markup: leftKb() });
@@ -2039,18 +2093,19 @@ async function sendDanhSachDaMoi(chatId) {
 
 async function sendMailOnlyList(chatId) {
   const rows = await readMailLog();
-  // collect unique full mails, preserve first-seen order cũ->mới
+  // collect unique mails only, preserve first-seen order cũ->mới
   rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
 
   const seen = new Set();
   const mails = [];
   for (const r of rows) {
-    const full = String(r.mail || "").trim();
-    if (!full || !full.includes("@")) continue;
-    const key = full.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    mails.push(full);
+    const full = String(r.mail || "").trim().toLowerCase();
+    if (!full || !full.includes("@")) continue; // skip phone-only lines
+    const short = toMailShortForCopy(full);
+    if (!short) continue;
+    if (seen.has(short)) continue;
+    seen.add(short);
+    mails.push(short);
   }
 
   await send(chatId, mails.join("\n"), { reply_markup: leftKb(), __raw: true });
@@ -2118,7 +2173,9 @@ async function handleTextMessage(msg) {
 
   if (text === "✏️ Sửa Tổng Doanh Thu") {
     setSession(chatId, { flow: "revenue_edit", step: "amount", data: {} });
-    await send(chatId, `✏️ <b>Sửa tổng doanh thu</b>\nNhập <b>TỔNG</b> doanh thu mới (vd <code>87k</code>, <code>0k</code>) nha~`, {
+    // ✅ FIX: "Sửa" = SET ABSOLUTE (nhập tổng mới, bot tự tính delta)
+    await send(chatId, `✏️ <b>Sửa tổng doanh thu</b>
+Nhập <b>TỔNG doanh thu MỚI</b> (vd <code>87k</code>) nha~`, {
       reply_markup: rightKb(),
     });
     return;
@@ -2184,6 +2241,23 @@ async function handleTextMessage(msg) {
 
   // session
   if (await handleSessionInput(chatId, userName, text)) return;
+
+  // ✅ MAIL delete (case-insensitive)
+  const mailDel = parseMailDelete(text);
+  if (mailDel) {
+    let r;
+    if (mailDel.by === "id") r = await deleteMailById(mailDel.id);
+    else r = await deleteLatestMailByMail(mailDel.mail);
+
+    if (!r.ok) {
+      await send(chatId, `🥺 ${escapeHtml(r.reason || "Không xóa được")}`, { reply_markup: leftKb() });
+      return;
+    }
+    await send(chatId, `🗑️ Đã xóa: <b>${escapeHtml(String(r.id || "").toUpperCase())}</b> (${escapeHtml(r.mail || "")})`, {
+      reply_markup: leftKb(),
+    });
+    return;
+  }
 
   // ✅ MAIL edit
   const mailEdit = parseMailEdit(text);
