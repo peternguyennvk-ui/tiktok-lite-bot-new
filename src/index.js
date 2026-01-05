@@ -1371,16 +1371,6 @@ function detectGameFromText(normText) {
   return "";
 }
 
-// ✅ NEW: only accept quick revenue when FIRST TOKEN is command (hq/qr/db/them)
-function detectQuickRevenueFirstToken(normText) {
-  const t = normalizeSpaces(String(normText || ""));
-  if (!t) return "";
-  const first = t.split(" ")[0] || "";
-  if (first === "hq" || first === "qr" || first === "db") return first;
-  if (first === "them" || first === "thu" || first === "khac" || first === "ngoai") return "other";
-  return "";
-}
-
 /* =========================
  * Reset
  * ========================= */
@@ -1763,31 +1753,49 @@ function prettyResultText(result) {
   return "";
 }
 
-// ✅ FIX DỨT ĐIỂM: parse MAIL theo rawTokens, normalize từng token riêng lẻ
-// - Không dùng normTokens[] để tránh lệch index khi token có số (minhtiktok29@)
+// Parse commands like:
+// "A bình Minhtiktop.v1@ Hq (ghi chú)"
+// "Abinh minhtiktok@ tạch ..."
+// "A tiến minhtik@ 0107... db"
 function parseMailLine(text) {
   const raw = normalizeSpaces(String(text || ""));
   if (!raw) return null;
 
+  const norm = normalizeForParse(raw);
+
+  // Accept "a ..." or "a..." or "a. ..."
+  if (!(norm === "a" || norm.startsWith("a ") || norm.startsWith("a.") || norm.startsWith("a," ) || norm.startsWith("a-") || norm.startsWith("a_") || norm.startsWith("a"))) {
+    return null;
+  }
+  // Must begin with an "a" marker (user's habit). To avoid accidentally matching other commands:
+  // require first char is 'a' (case-insensitive) and next char is space or letter/dot.
+  const firstChar = norm[0];
+  if (firstChar !== "a") return null;
+
+  // Tokenize from original (keep accents for name/note), but use normalized tokens for detection
   const rawTokens = raw.split(/\s+/).filter(Boolean);
-  if (rawTokens.length < 3) return null;
+  const normTokens = normalizeForParse(raw).split(/\s+/).filter(Boolean);
 
-  // must start with A / Abinh / A.Bình ... (case-insensitive)
-  const firstRaw = rawTokens[0] || "";
-  const firstNorm = removeDiacritics(firstRaw).toLowerCase();
-
+  // Determine if first token is like "A" or "Abinh"
+  // Remove leading marker from first raw token if it's glued.
   let startIdx = 0;
+  let firstRaw = rawTokens[0] || "";
+  let firstNorm = normTokens[0] || "";
 
-  // Case: "A" or "A." => skip token 0
-  if (firstNorm === "a" || firstNorm === "a." || firstNorm === "a," || firstNorm === "a-") {
+  // If first token is "A" or "A." => skip it
+  if (firstNorm === "a" || firstNorm === "a." || firstNorm === "a," ) {
     startIdx = 1;
   } else if (firstNorm.startsWith("a") && firstNorm.length > 1) {
-    // Case: "Abinh" / "A.Binh" / "A-Binh" => strip the leading A marker and keep the rest as name token
-    const stripped = firstRaw.replace(/^A[\.\,\-\_]?/i, "");
-    rawTokens[0] = stripped || firstRaw;
-    startIdx = 0;
-  } else {
-    return null;
+    // glued: "Abinh" => treat as name token "bình"
+    // raw token may be "Abinh" or "A.Bình"
+    const glued = firstRaw;
+    const gluedNorm = removeDiacritics(glued).toLowerCase();
+    // remove leading 'a' or 'a.' etc
+    const stripped = glued.replace(/^A[\.\,\-\_]?/i, "");
+    // Replace token 0 to stripped as name token, keep startIdx=1 after we push it
+    rawTokens[0] = stripped || glued; // fallback
+    normTokens[0] = gluedNorm.replace(/^a[\.\,\-\_]?/i, "") || gluedNorm;
+    startIdx = 0; // still process token0 as name
   }
 
   let nameParts = [];
@@ -1798,7 +1806,7 @@ function parseMailLine(text) {
 
   for (let i = startIdx; i < rawTokens.length; i++) {
     const rt = rawTokens[i];
-    const nt = normalizeForParse(rt); // normalize token-by-token (no index mismatch)
+    const nt = normTokens[i] || normalizeForParse(rt);
 
     // mail detection: ANY token containing "@"
     if (!foundMail && rt.includes("@")) {
@@ -1846,6 +1854,8 @@ function parseMailEdit(text) {
   // also allow: "sua mail xxx@ hq ..."
   if (restNorm.startsWith("mail ")) {
     const tRaw = restRaw.replace(/^mail\s+/i, "");
+    // Fake an "A" prefix for reuse parser: need a name - but spec wants update by mail latest
+    // We'll parse mail + result + note, name is optional here.
     const toks = tRaw.split(/\s+/).filter(Boolean);
     let mailTk = "";
     let result = "";
@@ -1965,7 +1975,12 @@ async function sendDanhSachDaMoi(chatId) {
   for (const r of tach) {
     const nm = titleCaseVi(r.name);
     const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
-    out.push(`• Mời <b>A. ${escapeHtml(nm)}</b> / ${escapeHtml(dt)}`);
+    const mailFull = String(r.mail || "").trim();
+    const note = normalizeSpaces(String(r.note || ""));
+    const noteTxt = note ? ` / Note: ${escapeHtml(note)}` : "";
+    out.push(
+      `• Mời <b>A. ${escapeHtml(nm)}</b> / Mail: <b>${escapeHtml(mailFull)}</b>${noteTxt} / ${escapeHtml(dt)}`
+    );
   }
 
   out.push(`\n✅ <b>OK</b>`);
@@ -1975,15 +1990,20 @@ async function sendDanhSachDaMoi(chatId) {
     const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
     const left = daysLeftForOk(r.created_at);
     const resTxt = prettyResultText(String(r.result || "").toUpperCase());
+    const mailFull = String(r.mail || "").trim();
+    const note = normalizeSpaces(String(r.note || ""));
+    const noteTxt = note ? ` / Note: ${escapeHtml(note)}` : "";
     out.push(
-      `• Mời <b>A. ${escapeHtml(nm)}</b> ${escapeHtml(resTxt)} / ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`
+      `• Mời <b>A. ${escapeHtml(nm)}</b> / Mail: <b>${escapeHtml(mailFull)}</b>${noteTxt} / ${escapeHtml(
+        resTxt
+      )} / ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh) 🫶`
     );
   }
 
   await send(chatId, out.join("\n"), { reply_markup: leftKb() });
 }
 
-async function sendMailOnlyList(chatId) {
+async function sendMailOnlyListasync function sendMailOnlyList(chatId) {
   const rows = await readMailLog();
   // collect unique mails only, preserve first-seen order cũ->mới
   rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
@@ -1991,19 +2011,20 @@ async function sendMailOnlyList(chatId) {
   const seen = new Set();
   const mails = [];
   for (const r of rows) {
-    const full = String(r.mail || "").trim().toLowerCase();
+    const full = String(r.mail || "").trim();
     if (!full || !full.includes("@")) continue; // skip phone-only lines
-    const short = toMailShortForCopy(full);
-    if (!short) continue;
-    if (seen.has(short)) continue;
-    seen.add(short);
-    mails.push(short);
+    const key = full.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    // ✅ Hiện FULL mail có domain
+    mails.push(full);
   }
 
   await send(chatId, mails.join("\n"), { reply_markup: leftKb(), __raw: true });
 }
 
 /* =========================
+ * Cron placeholder/* =========================
  * Cron placeholder
  * ========================= */
 cron.schedule("*/30 * * * *", async () => {
@@ -2145,8 +2166,9 @@ async function handleTextMessage(msg) {
       await send(chatId, `🥺 ${escapeHtml(r.reason || "Không sửa được")}`, { reply_markup: leftKb() });
       return;
     }
+    const nm = titleCaseVi(mailEdit.name || "");
     const resTxt = prettyResultText(mailEdit.result);
-    await send(chatId, `✅ Đã sửa: <b>${escapeHtml(toMailShortForCopy(mailEdit.mail))}</b> → ${escapeHtml(resTxt)} nha~`, {
+    await send(chatId, `✅ Đã sửa: <b>${escapeHtml(String(mailEdit.mail || '').trim())}</b> → ${escapeHtml(resTxt)} nha~`, {
       reply_markup: leftKb(),
     });
     return;
@@ -2253,13 +2275,24 @@ async function handleTextMessage(msg) {
     return;
   }
 
-  // ✅ quick revenue (MAIN doanh thu) — FIX: chỉ nhận khi FIRST TOKEN là lệnh thu
+  
+  // ✅ GUARD: Tin nhắn có "@" ưu tiên MAIL, tuyệt đối KHÔNG tính vào DOANH THU
+  if (text.includes("@")) {
+    await send(
+      chatId,
+      `Bạn đang nhập lệnh <b>MAIL</b> đúng hong 😚\nGõ theo mẫu:\n<code>A Bình tenmail@ hq (note)</code>\nhoặc\n<code>Abinh tenmail@ tạch (note)</code>`,
+      { reply_markup: leftKb() }
+    );
+    return;
+  }
+
+// quick revenue (MAIN doanh thu)
   const norm = normalizeForParse(text);
-  const quickGame = detectQuickRevenueFirstToken(norm);
+  const game = detectGameFromText(norm);
   const amt = extractMoneyFromText(text);
 
-  if (quickGame && amt != null) {
-    const g = quickGame === "other" ? "other" : quickGame;
+  if (game && amt != null) {
+    const g = game === "other" ? "other" : game;
     const type = g === "other" ? "other" : "manual";
     await addGameRevenue({ game: g, type, amount: amt, note: "input", chatId, userName });
     await send(chatId, `✅ <b>Đã ghi doanh thu</b> <code>${escapeHtml(g.toUpperCase())}</code>: <b>${moneyWON(amt)}</b>`, {
@@ -2348,79 +2381,3 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ BOT READY on ${PORT} | ${VERSION}`);
 });
-/***********************
- * OVERRIDE MAIL MODULE
- * DÁN CUỐI FILE LÀ XONG
- ***********************/
-
-// 1) Override DANH SÁCH ĐÃ MỜI (kèm Mail + Note)
-globalThis.sendDanhSachDaMoi = async function sendDanhSachDaMoi(chatId) {
-  const rows = await readMailLog();
-  await autoDoneIfNeeded(rows);
-
-  // sort cũ -> mới
-  rows.sort((a, b) => (String(a.created_at || "") > String(b.created_at || "") ? 1 : -1));
-
-  const tach = rows.filter((r) => String(r.result || "").toUpperCase() === "TACH");
-  const ok = rows.filter((r) => String(r.result || "").toUpperCase() !== "TACH");
-
-  const out = [];
-  out.push(`📋 <b>DANH SÁCH ĐÃ MỜI</b>\n`);
-
-  out.push(`❌ <b>TẠCH</b>`);
-  if (tach.length === 0) out.push(`<i>(trống)</i>`);
-  for (const r of tach) {
-    const nm = titleCaseVi(r.name);
-    const dt = (globalThis.dayjs && dayjs(r.created_at).isValid()) ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
-    const mailFull = String(r.mail || "").trim(); // ✅ full mail luôn
-    const note = normalizeSpaces(String(r.note || ""));
-    const noteTxt = note ? ` / Note: ${escapeHtml(note)}` : "";
-    out.push(
-      `• Mời <b>A. ${escapeHtml(nm)}</b> / Mail: <b>${escapeHtml(mailFull)}</b>${noteTxt} / ${escapeHtml(dt)}`
-    );
-  }
-
-  out.push(`\n✅ <b>OK</b>`);
-  if (ok.length === 0) out.push(`<i>(trống)</i>`);
-  for (const r of ok) {
-    const nm = titleCaseVi(r.name);
-    const dt = (globalThis.dayjs && dayjs(r.created_at).isValid()) ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
-    const left = daysLeftForOk(r.created_at);
-    const resTxt = prettyResultText(String(r.result || "").toUpperCase());
-    const mailFull = String(r.mail || "").trim(); // ✅ full mail luôn
-    const note = normalizeSpaces(String(r.note || ""));
-    const noteTxt = note ? ` / Note: ${escapeHtml(note)}` : "";
-    out.push(
-      `• Mời <b>A. ${escapeHtml(nm)}</b> / Mail: <b>${escapeHtml(mailFull)}</b>${noteTxt} / ${escapeHtml(
-        resTxt
-      )} / ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh) 🫶`
-    );
-  }
-
-  await send(chatId, out.join("\n"), { reply_markup: leftKb() });
-};
-
-// 2) Override MENU "Mail" (in full mail có domain, không còn xx@)
-globalThis.sendMailOnlyList = async function sendMailOnlyList(chatId) {
-  const rows = await readMailLog();
-
-  // sort cũ -> mới
-  rows.sort((a, b) => (String(a.created_at || "") > String(b.created_at || "") ? 1 : -1));
-
-  const seen = new Set();
-  const mails = [];
-
-  for (const r of rows) {
-    const full = String(r.mail || "").trim();
-    if (!full || !full.includes("@")) continue;
-
-    const key = full.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    // ✅ trả full mail có domain
-    mails.push(full);
-  }
-
-  await send(chatId, mails.join("\n") || "(trống)", { reply_markup: leftKb(), __raw: true });
-};
