@@ -1897,54 +1897,6 @@ function parseMailEdit(text) {
   return null;
 }
 
-// Delete command:
-// - "xoa mail minhtiktok@" (delete latest by mail)
-// - "xoa mail MAIL01" / "xoa MAIL01" (delete by id)
-// - also accept "xoa 01" => MAIL01
-function parseMailDelete(text) {
-  const raw = normalizeSpaces(String(text || ""));
-  if (!raw) return null;
-  const norm = normalizeForParse(raw);
-  if (!norm.startsWith("xoa ")) return null;
-
-  // remove "xoa"
-  let restRaw = raw.slice(raw.toLowerCase().indexOf("xoa") + 3).trim();
-  if (!restRaw) return null;
-
-  // allow optional leading "mail"
-  const restNorm = normalizeForParse(restRaw);
-  if (restNorm.startsWith("mail ")) restRaw = restRaw.replace(/^mail\s+/i, "");
-
-  restRaw = normalizeSpaces(restRaw);
-  if (!restRaw) return null;
-
-  const toks = restRaw.split(/\s+/).filter(Boolean);
-  const first = toks[0] || "";
-  if (!first) return null;
-
-  // by mail
-  if (first.includes("@")) {
-    const m = normalizeMailFull(first);
-    if (!m) return null;
-    return { by: "mail", mail: m };
-  }
-
-  // by id: MAIL01 / mail01 / Mail01
-  if (/^mail\d+$/i.test(first)) {
-    return { by: "id", id: first.toUpperCase() };
-  }
-
-  // by number: 1 / 01 / 001
-  if (/^\d{1,3}$/.test(first)) {
-    const n = String(Number(first));
-    if (!n || n === "NaN") return null;
-    return { by: "id", id: ("MAIL" + n.padStart(2, "0")).toUpperCase() };
-  }
-
-  return null;
-}
-
-
 async function nextMailId() {
   const rows = await getValues("MAIL_LOG!A2:A");
   let max = 0;
@@ -2025,20 +1977,59 @@ async function updateLatestMailByMail({ mail, result, note, name }) {
 
   return { ok: true, row: last.rowNumber };
 }
+function normalizeMailId(input) {
+  const t = String(input || "").trim();
+  if (!t) return "";
+  // Accept "MAIL01", "mail01", "01", "1"
+  const m1 = t.match(/^mail\s*(\d+)$/i);
+  if (m1) return "MAIL" + String(Number(m1[1])).padStart(2, "0");
+  const m2 = t.match(/^(\d+)$/);
+  if (m2) return "MAIL" + String(Number(m2[1])).padStart(2, "0");
+  const m3 = t.match(/^MAIL(\d+)$/i);
+  if (m3) return "MAIL" + String(Number(m3[1])).padStart(2, "0");
+  return t.toUpperCase();
+}
 
-async function deleteMailRowByRowNumber(rowNumber) {
-  // Clear A:G for that row (keep row index stable)
-  await clearValues(`MAIL_LOG!A${rowNumber}:G${rowNumber}`);
-  return true;
+function parseMailDelete(text) {
+  const raw = normalizeSpaces(String(text || ""));
+  if (!raw) return null;
+
+  const norm = normalizeForParse(raw);
+
+  // Accept: "xoa mail MAIL01" | "xoa MAIL01" | "xoa mail01" | "xoa 01" | "xoa mail minhtiktok@" | "xoa mail minhtiktok@gmail.com"
+  if (!(norm === "xoa" || norm.startsWith("xoa "))) return null;
+
+  // Tokens from normalized string (emails preserved by normalizeForParse)
+  const tks = norm.split(" ").filter(Boolean);
+  if (tks.length < 2) return { error: "FORMAT" };
+
+  // drop leading "xoa"
+  let rest = tks.slice(1);
+
+  // optional "mail"
+  if (rest[0] === "mail") rest = rest.slice(1);
+  if (rest.length < 1) return { error: "FORMAT" };
+
+  const target = rest[0];
+
+  // If looks like email/localpart@, treat as mail
+  if (target.includes("@")) {
+    return { by: "mail", value: normalizeMailFull(target) };
+  }
+
+  // Else treat as id or number
+  const id = normalizeMailId(target);
+  if (!id) return { error: "FORMAT" };
+  return { by: "id", value: id };
 }
 
 async function deleteMailById(id) {
   const rows = await readMailLog();
-  const target = String(id || "").trim().toUpperCase();
-  const found = rows.find((r) => String(r.id || "").trim().toUpperCase() === target);
-  if (!found) return { ok: false, reason: "Không tìm thấy ID để xóa" };
-  await deleteMailRowByRowNumber(found.rowNumber);
-  return { ok: true, id: found.id, mail: found.mail };
+  const targetId = normalizeMailId(id);
+  const found = rows.find((r) => String(r.id || "").trim().toUpperCase() === targetId);
+  if (!found) return { ok: false, reason: "Không tìm thấy ID" };
+  await updateValues(`MAIL_LOG!A${found.rowNumber}:G${found.rowNumber}`, [["", "", "", "", "", "", ""]]);
+  return { ok: true, id: targetId, mail: normalizeMailFull(found.mail) };
 }
 
 async function deleteLatestMailByMail(mail) {
@@ -2048,16 +2039,14 @@ async function deleteLatestMailByMail(mail) {
     .filter((r) => normalizeMailFull(r.mail) === targetMail)
     .sort((a, b) => (a.created_at > b.created_at ? 1 : -1)); // cũ->mới
   const last = matches[matches.length - 1];
-  if (!last) return { ok: false, reason: "Không tìm thấy mail để xóa" };
-  await deleteMailRowByRowNumber(last.rowNumber);
-  return { ok: true, id: last.id, mail: last.mail };
+  if (!last) return { ok: false, reason: "Không tìm thấy mail" };
+  await updateValues(`MAIL_LOG!A${last.rowNumber}:G${last.rowNumber}`, [["", "", "", "", "", "", ""]]);
+  return { ok: true, id: String(last.id || "").trim(), mail: targetMail };
 }
 
 
 async function sendDanhSachDaMoi(chatId) {
   const rows = await readMailLog();
-
-  // ✅ Rule 14 ngày: chỉ áp dụng cho OK (HQ/QR/DB)
   await autoDoneIfNeeded(rows);
 
   // sort cũ -> mới
@@ -2070,76 +2059,71 @@ async function sendDanhSachDaMoi(chatId) {
   out.push(`📋 <b>DANH SÁCH ĐÃ MỜI</b>
 `);
 
-  // ❌ TẠCH
   out.push(`❌ <b>TẠCH</b>`);
   if (tach.length === 0) out.push(`<i>(trống)</i>`);
   for (const r of tach) {
-    const id = String(r.id || "").trim().toUpperCase();
+    const id = String(r.id || "").trim();
     const nm = titleCaseVi(r.name);
-    const mail = String(r.mail || "").trim();
-    const note = String(r.note || "").trim();
+    const mailFull = normalizeMailFull(r.mail);
+    const note = normalizeSpaces(String(r.note || ""));
     const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
     const resTxt = prettyResultText("TACH");
 
     const lines = [];
-    lines.push(`• <b>[${escapeHtml(id)}]</b> A. ${escapeHtml(nm)}`);
-    if (mail) lines.push(`  📧 ${escapeHtml(mail)}`);
-    if (note) lines.push(`  📝 ${escapeHtml(note)}`);
-    lines.push(`  ❌ ${escapeHtml(resTxt)}`);
-    if (dt) lines.push(`  📅 ${escapeHtml(dt)}`);
-    out.push(lines.join("
-"));
+    lines.push(`• <b>[${escapeHtml(id)}]</b> A. <b>${escapeHtml(nm || "(không tên)")}</b>`);
+    if (mailFull) lines.push(`📧 ${escapeHtml(mailFull)}`);
+    if (note) lines.push(`📝 ${escapeHtml(note)}`);
+    lines.push(`❌ ${escapeHtml(resTxt)}`);
+    if (dt) lines.push(`📅 ${escapeHtml(dt)}`);
+    out.push(lines.join("\n"));
   }
 
-  // ✅ OK
   out.push(`
 ✅ <b>OK</b>`);
   if (ok.length === 0) out.push(`<i>(trống)</i>`);
   for (const r of ok) {
-    const id = String(r.id || "").trim().toUpperCase();
+    const id = String(r.id || "").trim();
     const nm = titleCaseVi(r.name);
-    const mail = String(r.mail || "").trim();
-    const note = String(r.note || "").trim();
+    const mailFull = normalizeMailFull(r.mail);
+    const note = normalizeSpaces(String(r.note || ""));
     const dt = dayjs(r.created_at).isValid() ? dayjs(r.created_at).format("DD/MM/YYYY") : "";
+    const result = String(r.result || "").toUpperCase();
+    const resTxt = prettyResultText(result);
     const left = daysLeftForOk(r.created_at);
-    const res = String(r.result || "").toUpperCase();
-    const resTxt = prettyResultText(res);
 
     const lines = [];
-    lines.push(`• <b>[${escapeHtml(id)}]</b> A. ${escapeHtml(nm)}`);
-    if (mail) lines.push(`  📧 ${escapeHtml(mail)}`);
-    if (note) lines.push(`  📝 ${escapeHtml(note)}`);
-    lines.push(`  🎁 ${escapeHtml(resTxt)}`);
-    if (dt) lines.push(`  📅 ${escapeHtml(dt)} (còn <b>${left}</b> ngày điểm danh)`);
-    else lines.push(`  (còn <b>${left}</b> ngày điểm danh)`);
-    out.push(lines.join("
-"));
+    lines.push(`• <b>[${escapeHtml(id)}]</b> A. <b>${escapeHtml(nm || "(không tên)")}</b>`);
+    if (mailFull) lines.push(`📧 ${escapeHtml(mailFull)}`);
+    if (note) lines.push(`📝 ${escapeHtml(note)}`);
+    lines.push(`🎁 ${escapeHtml(resTxt)}`);
+    if (dt) {
+      if (left > 0) lines.push(`📅 ${escapeHtml(dt)} (còn ${left} ngày điểm danh)`);
+      else lines.push(`📅 ${escapeHtml(dt)} (hết hạn điểm danh)`);
+    }
+    out.push(lines.join("\n"));
   }
 
-  await send(chatId, out.join("
-"), { reply_markup: leftKb() });
+  await send(chatId, out.join("\n"), { reply_markup: leftKb(), __raw: true });
 }
+
 
 async function sendMailOnlyList(chatId) {
   const rows = await readMailLog();
-  // Unique (không trùng) – giữ thứ tự cũ -> mới
-  rows.sort((a, b) => (a.created_at > b.created_at ? 1 : -1));
 
   const seen = new Set();
   const mails = [];
   for (const r of rows) {
-    const full = String(r.mail || "").trim();
-    if (!full) continue;
+    const full = normalizeMailFull(r.mail);
+    if (!full || !full.includes("@")) continue;
     const key = full.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
-    mails.push(full); // ✅ luôn FULL email có domain (không rút gọn xx@)
+    mails.push(full);
   }
 
-  const out = mails.length ? mails.join("
-") : "(chưa có mail)";
-  await send(chatId, out, { reply_markup: leftKb(), __raw: true });
+  await send(chatId, mails.length ? mails.join("\n") : "<i>(trống)</i>", { reply_markup: leftKb(), __raw: true });
 }
+
 
 /* =========================
  * Cron placeholder
@@ -2272,25 +2256,33 @@ Nhập <b>TỔNG doanh thu MỚI</b> (vd <code>87k</code>) nha~`, {
   // session
   if (await handleSessionInput(chatId, userName, text)) return;
 
+  // ✅ MAIL edit
+  
   // ✅ MAIL delete (case-insensitive)
   const mailDel = parseMailDelete(text);
   if (mailDel) {
-    let r;
-    if (mailDel.by === "id") r = await deleteMailById(mailDel.id);
-    else r = await deleteLatestMailByMail(mailDel.mail);
-
-    if (!r.ok) {
-      await send(chatId, `🥺 ${escapeHtml(r.reason || "Không xóa được")}`, { reply_markup: leftKb() });
+    if (mailDel.error) {
+      await send(chatId, `Bạn nhập chưa đúng.\nVí dụ:\n<code>xoa MAIL01</code>\n<code>xoa mail MAIL01</code>\n<code>xoa mail minhtiktok@</code>`, {
+        reply_markup: leftKb(),
+      });
       return;
     }
-    await send(chatId, `🗑️ Đã xóa: <b>${escapeHtml(String(r.id || "").toUpperCase())}</b> (${escapeHtml(r.mail || "")})`, {
+
+    let r;
+    if (mailDel.by === "id") r = await deleteMailById(mailDel.value);
+    else r = await deleteLatestMailByMail(mailDel.value);
+
+    if (!r.ok) {
+      await send(chatId, `🥺 Không tìm thấy để xóa: <b>${escapeHtml(mailDel.value)}</b>`, { reply_markup: leftKb() });
+      return;
+    }
+    await send(chatId, `🗑️ Đã xóa: <b>${escapeHtml(r.id || mailDel.value)}</b> ${r.mail ? `(${escapeHtml(r.mail)})` : ""}`, {
       reply_markup: leftKb(),
     });
     return;
   }
 
-  // ✅ MAIL edit
-  const mailEdit = parseMailEdit(text);
+const mailEdit = parseMailEdit(text);
   if (mailEdit) {
     const r = await updateLatestMailByMail({
       mail: mailEdit.mail,
@@ -2322,6 +2314,17 @@ Nhập <b>TỔNG doanh thu MỚI</b> (vd <code>87k</code>) nha~`, {
     });
     return;
   }
+
+  // 🔒 Nếu có ký tự "@" mà không match MAIL add/edit/delete => không chạy parser doanh thu (fix bug @ -> doanh thu)
+  if (String(text || "").includes("@")) {
+    await send(
+      chatId,
+      `Mình thấy bạn có nhập mail (có ký tự <code>@</code>) nhưng format chưa đúng.\nVí dụ đúng:\n• <code>A Bình minhtiktok@ HQ note</code>\n• <code>sua mail minhtiktok@ qr note</code>\n• <code>xoa MAIL01</code>`,
+      { reply_markup: leftKb() }
+    );
+    return;
+  }
+
 
   // ✅ SUA commands (lot)
   const sua = parseSuaCommand(text);
