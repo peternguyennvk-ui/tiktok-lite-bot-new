@@ -2303,15 +2303,80 @@ const mailEdit = parseMailEdit(text);
   }
 
   // ✅ MAIL add
-  const mailLine = parseMailLine(text);
+  function parseMailLineFreeForm(text) {
+    const raw = String(text || "").trim().replace(/\s+/g, " ");
+    if (!raw) return null;
+
+    const tokens = raw.split(" ").filter(Boolean);
+    const mailIdx = tokens.findIndex((t) => t.includes("@"));
+    if (mailIdx === -1) return null;
+
+    // mail: token có @ là mail, xxx@ => xxx@gmail.com
+    let mailTok = tokens[mailIdx].trim();
+    const m = mailTok.match(/^([^@\s]+)@$/);
+    const mail = m ? `${m[1]}@gmail.com` : mailTok;
+
+    // normalize helper (bỏ dấu + lower)
+    const norm = (s) =>
+      String(s || "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/đ/g, "d")
+        .trim();
+
+    // result: token hợp lệ đầu tiên sau mail
+    let result = null;
+    let resPos = -1;
+    for (let i = mailIdx + 1; i < tokens.length; i++) {
+      const t = norm(tokens[i]);
+
+      if (t === "hq" || t === "qr" || t === "db") {
+        result = t.toUpperCase();
+        resPos = i;
+        break;
+      }
+
+      // tạch/tach/tắc/chết -> TACH (sau khi bỏ dấu: tach/tac/chet)
+      if (t === "tach" || t === "tac" || t === "chet") {
+        result = "TACH";
+        resPos = i;
+        break;
+      }
+    }
+
+    if (!result) return { error: "RESULT_MISSING" };
+
+    // name: mọi thứ trước mail (tự do)
+    const name = tokens.slice(0, mailIdx).join(" ").trim();
+
+    // note: mọi thứ sau result
+    const note = tokens.slice(resPos + 1).join(" ").trim();
+
+    return { name, mail, result, note };
+  }
+
+  const mailLine = parseMailLineFreeForm(text);
   if (mailLine) {
+    if (mailLine.error === "RESULT_MISSING") {
+      await send(
+        chatId,
+        `Thiếu <b>HQ / QR / DB / TẠCH</b> sau mail rồi bạn iu 😅\nVí dụ đúng:\n• <code>tên tự do abc@ HQ note</code>\n• <code>tên tự do abc@yahoo.com tạch</code>`,
+        { reply_markup: leftKb() }
+      );
+      return;
+    }
+
     await addMailLog(mailLine);
     const today = dayjs().format("DD/MM/YYYY");
-    const nm = titleCaseVi(mailLine.name);
+    const nm = titleCaseVi(mailLine.name || "");
     const resTxt = prettyResultText(mailLine.result);
-    await send(chatId, `Mời <b>A. ${escapeHtml(nm)}</b> ${escapeHtml(resTxt)} / ${escapeHtml(today)}`, {
-      reply_markup: leftKb(),
-    });
+
+    await send(
+      chatId,
+      `✅ Đã lưu: <b>${escapeHtml(nm || "(không tên)")}</b> — <b>${escapeHtml(mailLine.mail)}</b> — ${escapeHtml(resTxt)} / ${escapeHtml(today)}`,
+      { reply_markup: leftKb() }
+    );
     return;
   }
 
@@ -2319,7 +2384,7 @@ const mailEdit = parseMailEdit(text);
   if (String(text || "").includes("@")) {
     await send(
       chatId,
-      `Mình thấy bạn có nhập mail (có ký tự <code>@</code>) nhưng format chưa đúng.\nVí dụ đúng:\n• <code>A Bình minhtiktok@ HQ note</code>\n• <code>sua mail minhtiktok@ qr note</code>\n• <code>xoa MAIL01</code>`,
+      `Mình thấy bạn có nhập mail (có ký tự <code>@</code>) nhưng format chưa đúng.\nVí dụ đúng:\n• <code>tên tự do abc@ HQ note</code>\n• <code>sua mail abc@ qr note</code>\n• <code>xoa MAIL01</code>`,
       { reply_markup: leftKb() }
     );
     return;
